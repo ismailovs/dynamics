@@ -2,7 +2,7 @@
 
 ## Cursor Cloud specific instructions
 
-This is a skeleton repository called "dynamics" described as "dynamics usage samples". It currently contains only a `README.md` and a Terraform-oriented `.gitignore`.
+This is a skeleton repository called "dynamics" described as "dynamics usage samples". It currently contains documentation files (`README.md`, `AGENTS.md`, and `glossary.md`) plus a Terraform-oriented `.gitignore`.
 
 ### Repository state
 
