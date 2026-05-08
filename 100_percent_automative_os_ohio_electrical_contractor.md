@@ -14,6 +14,30 @@ Build a "digital office manager" where every non-physical task is automated:
 
 The electrician should only perform physical electrical work on site.
 
+## 1.1) Positioning and market message (must use in sales/implementation)
+
+Position this system as an **operations bottleneck eliminator**, not as "software."
+
+You win by:
+
+- Solving painful operational bottlenecks
+- Increasing speed-to-cash
+- Reducing admin overload and missed revenue
+- Improving technician productivity without adding office headcount
+- Selling business outcomes, not features
+
+### Example offer bundle
+
+- AI lead intake
+- Missed-call text-back
+- Estimate follow-up
+- Technician dispatch dashboards
+- Maintenance reminders
+- Solar proposal workflow
+- Permit/document automation
+- Quote generation assistance
+- KPI dashboards
+
 ---
 
 ## 2) Windows-first product strategy, then cross-platform
