@@ -36,6 +36,8 @@ terraform.rc
 # Python virtual environments
 .venv/
 venv/
+__pycache__/
+*.pyc
 
 # SQLite runtime data
 backend/data/*.sqlite3
