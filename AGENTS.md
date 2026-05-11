@@ -2,16 +2,22 @@
 
 ## Cursor Cloud specific instructions
 
-This is a skeleton repository called "dynamics" described as "dynamics usage samples". It currently contains only a `README.md` and a Terraform-oriented `.gitignore`.
+This repository now contains a working Automative OS MVP for an electrical contractor.
 
 ### Repository state
 
-- **No application code** exists yet — no services to run, build, or test.
-- The `.gitignore` is configured for **Terraform** (`.terraform/`, `*.tfstate`, `*.tfvars`, etc.), suggesting the repo will eventually contain Terraform/IaC configurations.
-- **No package manager, no dependencies, no build system, no test framework** is present.
+- Backend: `backend/app/main.py` (FastAPI), SQLite persistence in `backend/data/`.
+- Frontend: `frontend/index.html` (React via CDN, served by FastAPI).
+- Tests: `tests/test_mvp.py` (pytest).
+- Smoke script: `scripts/smoke_test.py`.
 
 ### Development notes
 
-- No lint, test, or build commands are available.
-- No dev server or services need to be started.
-- When code is added to this repo, update this file with the relevant setup, build, lint, and test instructions.
+- Install dependencies:
+  - `python3 -m pip install --user --break-system-packages -r requirements.txt`
+- Run app:
+  - `APP_DB_PATH=backend/data/live.sqlite3 python3 -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000`
+- Run tests:
+  - `python3 -m pytest -q`
+- Run live smoke test (server must already be running):
+  - `python3 scripts/smoke_test.py`

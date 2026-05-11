@@ -32,3 +32,10 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# Python virtual environments
+.venv/
+venv/
+
+# SQLite runtime data
+backend/data/*.sqlite3

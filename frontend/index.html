@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Automative OS MVP</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        background: #f4f6f8;
+        color: #1f2937;
+      }
+      header {
+        background: #0f172a;
+        color: white;
+        padding: 16px 24px;
+      }
+      main {
+        padding: 20px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 14px;
+      }
+      .card {
+        background: white;
+        border-radius: 10px;
+        padding: 14px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      }
+      h2 {
+        margin-top: 0;
+        font-size: 1rem;
+      }
+      input, select, textarea, button {
+        width: 100%;
+        margin-top: 8px;
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid #d1d5db;
+        box-sizing: border-box;
+      }
+      button {
+        background: #2563eb;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      pre {
+        white-space: pre-wrap;
+        background: #0b1020;
+        color: #d1fae5;
+        padding: 10px;
+        border-radius: 8px;
+        max-height: 220px;
+        overflow: auto;
+      }
+      .kpi {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+      }
+      .metric {
+        background: #eff6ff;
+        border-radius: 6px;
+        padding: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Automative OS MVP Dashboard</h1>
+      <p>AI intake, missed-call text-back, dispatch, reminders, solar workflow, documents, quotes, KPI.</p>
+    </header>
+    <div id="root"></div>
+    <script type="text/babel">
+      const { useEffect, useState } = React;
+      const API_BASE = "";
+
+      async function api(path, options = {}) {
+        const response = await fetch(`${API_BASE}${path}`, {
+          headers: { "Content-Type": "application/json" },
+          ...options,
+        });
+        return response.json();
+      }
+
+      function App() {
+        const [output, setOutput] = useState("Ready.");
+        const [kpi, setKpi] = useState({});
+        const [dispatch, setDispatch] = useState({ technicians: [], jobs: [] });
+        const [messages, setMessages] = useState([]);
+
+        const [lead, setLead] = useState({
+          customer_name: "Acme Bakery",
+          contact_channel: "email",
+          contact_value: "ops@acmebakery.com",
+          request_text: "Main panel overheating and breakers tripping at night",
+        });
+        const [missedCall, setMissedCall] = useState({
+          phone_number: "+16145550100",
+          reason: "After-hours missed call",
+        });
+        const [estimate, setEstimate] = useState({
+          customer_name: "Acme Bakery",
+          amount: 2450,
+          follow_up_in_hours: 0,
+        });
+        const [job, setJob] = useState({
+          title: "Emergency breaker replacement",
+          required_skill: "breaker",
+          latitude: 39.9612,
+          longitude: -82.9988,
+        });
+        const [maintenance, setMaintenance] = useState({
+          customer_name: "Acme Bakery",
+          asset_name: "Panel A",
+          next_service_date: new Date(Date.now() - 60000).toISOString(),
+          interval_days: 90,
+        });
+        const [solar, setSolar] = useState({
+          customer_name: "Green Roof LLC",
+          system_kw: 72,
+          site_address: "100 Energy Way, Columbus, OH",
+        });
+        const [permit, setPermit] = useState({
+          owner_name: "Green Roof LLC",
+          project_type: "Solar Interconnection",
+          city: "Columbus",
+          notes: "Commercial rooftop install",
+        });
+        const [quote, setQuote] = useState({
+          customer_name: "Acme Bakery",
+          service_type: "panel_upgrade",
+          labor_hours: 8,
+          materials_cost: 1800,
+          urgency: "priority",
+        });
+
+        async function refresh() {
+          const [kpiData, dispatchData, messageData] = await Promise.all([
+            api("/api/kpi/dashboard"),
+            api("/api/dispatch/dashboard"),
+            api("/api/messages"),
+          ]);
+          setKpi(kpiData);
+          setDispatch(dispatchData);
+          setMessages(messageData.slice(0, 8));
+        }
+
+        useEffect(() => {
+          refresh();
+        }, []);
+
+        async function submit(path, payload) {
+          const data = await api(path, { method: "POST", body: JSON.stringify(payload) });
+          setOutput(JSON.stringify(data, null, 2));
+          await refresh();
+        }
+
+        return (
+          <main>
+            <div className="card">
+              <h2>KPI Dashboard</h2>
+              <div className="kpi">
+                <div className="metric">Leads: {kpi.total_leads ?? 0}</div>
+                <div className="metric">Qualified: {kpi.qualified_leads ?? 0}</div>
+                <div className="metric">Conversion: {kpi.lead_conversion_percent ?? 0}%</div>
+                <div className="metric">Assigned Jobs: {kpi.assigned_jobs ?? 0}</div>
+                <div className="metric">Follow-ups: {kpi.estimate_follow_ups_sent ?? 0}</div>
+                <div className="metric">Revenue: ${kpi.revenue_projection ?? 0}</div>
+              </div>
+              <button onClick={refresh}>Refresh Dashboards</button>
+            </div>
+
+            <div className="card">
+              <h2>AI Lead Intake</h2>
+              <input value={lead.customer_name} onChange={(e) => setLead({ ...lead, customer_name: e.target.value })} />
+              <select value={lead.contact_channel} onChange={(e) => setLead({ ...lead, contact_channel: e.target.value })}>
+                <option value="email">email</option>
+                <option value="phone">phone</option>
+                <option value="messenger">messenger</option>
+              </select>
+              <input value={lead.contact_value} onChange={(e) => setLead({ ...lead, contact_value: e.target.value })} />
+              <textarea value={lead.request_text} onChange={(e) => setLead({ ...lead, request_text: e.target.value })} />
+              <button onClick={() => submit("/api/leads", lead)}>Create Lead</button>
+            </div>
+
+            <div className="card">
+              <h2>Missed-Call Text-Back</h2>
+              <input value={missedCall.phone_number} onChange={(e) => setMissedCall({ ...missedCall, phone_number: e.target.value })} />
+              <input value={missedCall.reason} onChange={(e) => setMissedCall({ ...missedCall, reason: e.target.value })} />
+              <button onClick={() => submit("/api/calls/missed", missedCall)}>Send Text-Back</button>
+            </div>
+
+            <div className="card">
+              <h2>Estimate + Follow-Up</h2>
+              <input value={estimate.customer_name} onChange={(e) => setEstimate({ ...estimate, customer_name: e.target.value })} />
+              <input type="number" value={estimate.amount} onChange={(e) => setEstimate({ ...estimate, amount: Number(e.target.value) })} />
+              <input type="number" value={estimate.follow_up_in_hours} onChange={(e) => setEstimate({ ...estimate, follow_up_in_hours: Number(e.target.value) })} />
+              <button onClick={() => submit("/api/estimates", estimate)}>Create Estimate</button>
+              <button onClick={() => submit("/api/automation/run", {})}>Run Automation (Follow-ups + Reminders)</button>
+            </div>
+
+            <div className="card">
+              <h2>Technician Dispatch Dashboard</h2>
+              <input value={job.title} onChange={(e) => setJob({ ...job, title: e.target.value })} />
+              <input value={job.required_skill} onChange={(e) => setJob({ ...job, required_skill: e.target.value })} />
+              <input type="number" value={job.latitude} onChange={(e) => setJob({ ...job, latitude: Number(e.target.value) })} />
+              <input type="number" value={job.longitude} onChange={(e) => setJob({ ...job, longitude: Number(e.target.value) })} />
+              <button onClick={() => submit("/api/jobs", job)}>Auto-Assign Job</button>
+              <pre>{JSON.stringify(dispatch.jobs.slice(0, 5), null, 2)}</pre>
+            </div>
+
+            <div className="card">
+              <h2>Maintenance Reminders</h2>
+              <input value={maintenance.customer_name} onChange={(e) => setMaintenance({ ...maintenance, customer_name: e.target.value })} />
+              <input value={maintenance.asset_name} onChange={(e) => setMaintenance({ ...maintenance, asset_name: e.target.value })} />
+              <input value={maintenance.next_service_date} onChange={(e) => setMaintenance({ ...maintenance, next_service_date: e.target.value })} />
+              <input type="number" value={maintenance.interval_days} onChange={(e) => setMaintenance({ ...maintenance, interval_days: Number(e.target.value) })} />
+              <button onClick={() => submit("/api/maintenance/plans", maintenance)}>Create Maintenance Plan</button>
+            </div>
+
+            <div className="card">
+              <h2>Solar Proposal Workflow</h2>
+              <input value={solar.customer_name} onChange={(e) => setSolar({ ...solar, customer_name: e.target.value })} />
+              <input type="number" value={solar.system_kw} onChange={(e) => setSolar({ ...solar, system_kw: Number(e.target.value) })} />
+              <input value={solar.site_address} onChange={(e) => setSolar({ ...solar, site_address: e.target.value })} />
+              <button onClick={() => submit("/api/solar/proposals", solar)}>Create Solar Proposal Packet</button>
+            </div>
+
+            <div className="card">
+              <h2>Permit/Document Automation</h2>
+              <input value={permit.owner_name} onChange={(e) => setPermit({ ...permit, owner_name: e.target.value })} />
+              <input value={permit.project_type} onChange={(e) => setPermit({ ...permit, project_type: e.target.value })} />
+              <input value={permit.city} onChange={(e) => setPermit({ ...permit, city: e.target.value })} />
+              <textarea value={permit.notes} onChange={(e) => setPermit({ ...permit, notes: e.target.value })} />
+              <button onClick={() => submit("/api/permits/generate", permit)}>Generate Permit Packet</button>
+            </div>
+
+            <div className="card">
+              <h2>Quote Generation Assistance</h2>
+              <input value={quote.customer_name} onChange={(e) => setQuote({ ...quote, customer_name: e.target.value })} />
+              <input value={quote.service_type} onChange={(e) => setQuote({ ...quote, service_type: e.target.value })} />
+              <input type="number" value={quote.labor_hours} onChange={(e) => setQuote({ ...quote, labor_hours: Number(e.target.value) })} />
+              <input type="number" value={quote.materials_cost} onChange={(e) => setQuote({ ...quote, materials_cost: Number(e.target.value) })} />
+              <select value={quote.urgency} onChange={(e) => setQuote({ ...quote, urgency: e.target.value })}>
+                <option value="standard">standard</option>
+                <option value="priority">priority</option>
+                <option value="emergency">emergency</option>
+              </select>
+              <button onClick={() => submit("/api/quotes/generate", quote)}>Generate Quote</button>
+            </div>
+
+            <div className="card">
+              <h2>Automation/Event Feed</h2>
+              <pre>{output}</pre>
+              <h3>Recent Messages</h3>
+              <pre>{JSON.stringify(messages, null, 2)}</pre>
+            </div>
+          </main>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
