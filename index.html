@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ship Battle</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- Header -->
+    <header class="game-header">
+      <h1 class="game-title">⚓ SHIP BATTLE</h1>
+      <div class="score-container">
+        <div class="score-box">
+          <div class="score-label">SCORE</div>
+          <div class="score-value" id="score-display">0</div>
+        </div>
+        <div class="score-box">
+          <div class="score-label">BEST</div>
+          <div class="score-value gold" id="high-score-display">0</div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+
+      <!-- Setup Phase -->
+      <div id="setup-phase" class="phase-panel">
+        <h2 class="phase-title">DEPLOY YOUR FLEET</h2>
+        <p class="phase-subtitle">Select a ship, hover over your grid to preview, then click to place. Press <kbd>R</kbd> to rotate.</p>
+        <div id="ship-list" class="ship-list"></div>
+        <div class="setup-actions">
+          <button id="rotate-btn" class="btn btn-outline">🔄 Rotate (R)</button>
+          <button id="random-btn" class="btn btn-outline">🎲 Random</button>
+          <button id="reset-btn" class="btn btn-outline" disabled>↩ Reset</button>
+        </div>
+      </div>
+
+      <!-- Battle Phase -->
+      <div id="battle-phase" class="phase-panel hidden">
+        <div id="turn-indicator" class="turn-indicator">YOUR TURN — FIRE!</div>
+        <div class="battle-stats">
+          <div class="stat-item"><span class="stat-label">SHOTS</span><span class="stat-val" id="stat-shots">0</span></div>
+          <div class="stat-item"><span class="stat-label">HITS</span><span class="stat-val" id="stat-hits">0</span></div>
+          <div class="stat-item"><span class="stat-label">ACCURACY</span><span class="stat-val" id="stat-accuracy">—</span></div>
+          <div class="stat-item"><span class="stat-label">SUNK</span><span class="stat-val" id="stat-sunk">0/5</span></div>
+        </div>
+      </div>
+
+      <!-- Boards -->
+      <div class="boards-wrapper">
+        <div class="board-section">
+          <h3 class="board-title">YOUR FLEET</h3>
+          <div class="board" id="player-board"></div>
+          <div class="fleet-status" id="player-fleet"></div>
+        </div>
+        <div class="vs-divider">VS</div>
+        <div class="board-section">
+          <h3 class="board-title">ENEMY WATERS</h3>
+          <div class="board" id="enemy-board"></div>
+          <div class="fleet-status" id="enemy-fleet"></div>
+        </div>
+      </div>
+
+      <!-- Message -->
+      <div class="message-area">
+        <div id="game-message" class="game-message">Select a ship below and place it on your grid!</div>
+      </div>
+
+      <!-- Actions -->
+      <div class="action-area">
+        <button id="start-btn" class="btn btn-primary" disabled>START BATTLE</button>
+      </div>
+
+    </main>
+
+    <!-- Game Over Overlay -->
+    <div id="game-over" class="overlay hidden">
+      <div class="overlay-card">
+        <div id="result-icon" class="result-icon">🏆</div>
+        <h2 id="result-title" class="result-title">VICTORY!</h2>
+        <div class="result-stats">
+          <div class="result-row"><span>Final Score</span><strong id="res-score">0</strong></div>
+          <div class="result-row"><span>Accuracy</span><strong id="res-accuracy">0%</strong></div>
+          <div class="result-row"><span>Enemy Ships Sunk</span><strong id="res-sunk">0/5</strong></div>
+        </div>
+        <div id="new-high" class="new-high hidden">🎉 NEW HIGH SCORE!</div>
+        <button id="play-again-btn" class="btn btn-primary">PLAY AGAIN</button>
+      </div>
+    </div>
+
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>
