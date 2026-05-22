@@ -27,8 +27,48 @@
 
     <main>
 
+      <!-- Mode Select (shown on load) -->
+      <div id="mode-select" class="phase-panel">
+        <h2 class="phase-title">CHOOSE MODE</h2>
+        <div class="mode-buttons">
+          <button id="sp-btn" class="mode-btn">
+            <div class="mode-icon">🤖</div>
+            <div class="mode-name">Single Player</div>
+            <div class="mode-desc">vs Computer AI</div>
+          </button>
+          <button id="mp-btn" class="mode-btn">
+            <div class="mode-icon">🌐</div>
+            <div class="mode-name">Multiplayer</div>
+            <div class="mode-desc">vs a friend online</div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Multiplayer Lobby -->
+      <div id="lobby" class="phase-panel hidden">
+        <h2 class="phase-title">MULTIPLAYER</h2>
+        <div id="lobby-pre" class="lobby-pre">
+          <button id="create-btn" class="btn btn-primary">Create Room</button>
+          <div class="lobby-or">— or —</div>
+          <div class="lobby-join-row">
+            <input id="join-input" class="code-input" maxlength="4" placeholder="CODE"
+                   spellcheck="false" autocomplete="off" />
+            <button id="join-btn" class="btn btn-outline">Join</button>
+          </div>
+        </div>
+        <div id="lobby-room" class="lobby-room hidden">
+          <div class="lobby-code-label">ROOM CODE</div>
+          <div id="lobby-code-display" class="lobby-code">—</div>
+          <p class="lobby-hint">Share this code with your opponent.</p>
+          <div id="lobby-waiting" class="lobby-status">⏳ Waiting for opponent…</div>
+          <div id="lobby-joined" class="lobby-status lobby-ok hidden">✅ Opponent connected! Place your ships.</div>
+        </div>
+        <div id="lobby-error" class="lobby-error hidden"></div>
+        <button id="back-btn" class="btn btn-outline lobby-back">← Back</button>
+      </div>
+
       <!-- Setup Phase -->
-      <div id="setup-phase" class="phase-panel">
+      <div id="setup-phase" class="phase-panel hidden">
         <h2 class="phase-title">DEPLOY YOUR FLEET</h2>
         <p class="phase-subtitle">Select a ship, hover over your grid to preview, then click to place. Press <kbd>R</kbd> to rotate.</p>
         <div id="ship-list" class="ship-list"></div>
@@ -72,6 +112,10 @@
 
       <!-- Actions -->
       <div class="action-area">
+        <div id="mp-ready-bar" class="mp-ready-bar hidden">
+          <div class="mp-ready-row"><span id="mp-dot-me" class="mp-ready-dot"></span>You</div>
+          <div class="mp-ready-row"><span id="mp-dot-op" class="mp-ready-dot"></span>Opponent</div>
+        </div>
         <button id="start-btn" class="btn btn-primary" disabled>START BATTLE</button>
       </div>
 
