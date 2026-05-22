@@ -387,6 +387,8 @@ function onEnemyCellClick(e) {
 }
 
 function playerAttack(r, c) {
+  SFX.fire();
+
   const cell = state.enemyGrid[r][c];
   cell.attacked = true;
   state.shots++;
@@ -405,6 +407,7 @@ function playerAttack(r, c) {
         getCell('enemy-board', sr, sc).className = 'cell sunk';
       });
       updateFleetDots('enemy-fleet', ship);
+      setTimeout(() => SFX.success(), 80);
       setMsg(`💥 You sunk the enemy ${ship.name}! +${ship.size * SCORE.SUNK_MULT} bonus`, 'sunk-msg');
     } else {
       getCell('enemy-board', r, c).className = 'cell hit';
@@ -412,6 +415,7 @@ function playerAttack(r, c) {
     }
   } else {
     getCell('enemy-board', r, c).className = 'cell miss';
+    setTimeout(() => SFX.miss(), 60);
     setMsg('💧 Miss!', 'miss-msg');
   }
 
@@ -430,6 +434,8 @@ function playerAttack(r, c) {
 
 function computerTurn() {
   if (state.phase !== 'battle') return;
+
+  SFX.fire();
 
   const { r, c } = aiChooseCell();
   const ai = state.ai;
@@ -598,6 +604,7 @@ function checkLoss() {
 
 function endGame(won) {
   state.phase = 'over';
+  setTimeout(() => (won ? SFX.victory() : SFX.defeat()), 350);
   $('result-icon').textContent    = won ? '🏆' : '💀';
   $('result-title').textContent   = won ? 'VICTORY!' : 'DEFEAT!';
   $('result-title').className     = 'result-title' + (won ? '' : ' defeat');
@@ -748,8 +755,24 @@ $('start-btn').addEventListener('click', startBattle);
 
 $('play-again-btn').addEventListener('click', initGame);
 
+$('mute-btn').addEventListener('click', () => {
+  const muted = SFX.toggleMute();
+  $('mute-btn').textContent = muted ? '🔇' : '🔊';
+  $('mute-btn').classList.toggle('muted', muted);
+  $('mute-btn').title = muted ? 'Unmute' : 'Mute';
+});
+
 /* =========================================================
    BOOT
    ========================================================= */
+
+// Sync mute button to persisted preference
+(function syncMuteBtn() {
+  if (SFX.isMuted()) {
+    $('mute-btn').textContent = '🔇';
+    $('mute-btn').classList.add('muted');
+    $('mute-btn').title = 'Unmute';
+  }
+})();
 
 initGame();
