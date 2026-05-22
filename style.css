@@ -103,6 +103,32 @@ body {
   color: var(--gold);
 }
 
+/* Mute button */
+.btn-mute {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 1.2rem;
+  width: 38px;
+  height: 38px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  transition: border-color var(--trans), background var(--trans), opacity var(--trans);
+}
+
+.btn-mute:hover {
+  border-color: var(--accent);
+  background: rgba(0,229,255,0.08);
+}
+
+.btn-mute.muted {
+  opacity: 0.45;
+}
+
 /* ===================== PHASE PANELS ===================== */
 .phase-panel {
   background: var(--surface);
