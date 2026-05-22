@@ -81,6 +81,25 @@ function randomPlaceAll(ships, grid) {
    GAME STATE
    ========================================================= */
 
+/* ---- Multiplayer state (inert until mp.active = true) ---- */
+const mp = {
+  active:  false,   // true while in multiplayer mode
+  ws:      null,    // WebSocket to relay server
+  code:    null,    // room code
+  num:     null,    // player number (1 or 2)
+  myTurn:  false,   // whose turn it is
+  meReady: false,
+  opReady: false,
+  opIn:    false,   // opponent in room
+  firing:  false,   // waiting for ATTACK_RESULT
+};
+
+/* Reads ?server= query param; falls back to localhost for dev */
+const SERVER_URL = (() => {
+  const p = new URLSearchParams(window.location.search);
+  return p.get('server') || 'ws://localhost:3000';
+})();
+
 const state = {
   phase: 'setup',    // 'setup' | 'battle' | 'over'
   playerGrid: null,
@@ -221,9 +240,12 @@ function refreshEnemyBoard() {
       const data = state.enemyGrid[r][c];
       cell.className = 'cell';
       if (data.attacked) {
-        cell.classList.add(data.ship ? 'hit' : 'miss');
-        if (data.ship && data.ship.sunk) cell.classList.add('sunk');
-      } else if (state.phase === 'battle' && state.isPlayerTurn) {
+        // In multiplayer we don't know ship positions upfront — use mpHit/mpSunk flags
+        const isHit  = mp.active ? data.mpHit  : !!data.ship;
+        const isSunk = mp.active ? data.mpSunk  : (data.ship && data.ship.sunk);
+        cell.classList.add(isHit ? 'hit' : 'miss');
+        if (isSunk) cell.classList.add('sunk');
+      } else if (state.phase === 'battle' && state.isPlayerTurn && (!mp.active || !mp.firing)) {
         cell.classList.add('attackable');
       }
     }
@@ -378,12 +400,18 @@ function onPlayerCellClick(e) {
    ========================================================= */
 
 function onEnemyCellClick(e) {
-  if (state.phase !== 'battle' || !state.isPlayerTurn) return;
+  if (state.phase !== 'battle') return;
   const r = +e.currentTarget.dataset.r;
   const c = +e.currentTarget.dataset.c;
   if (state.enemyGrid[r][c].attacked) return;
 
-  playerAttack(r, c);
+  if (mp.active) {
+    if (!mp.myTurn || mp.firing) return;
+    mpSendAttack(r, c);
+  } else {
+    if (!state.isPlayerTurn) return;
+    playerAttack(r, c);
+  }
 }
 
 function playerAttack(r, c) {
@@ -434,6 +462,7 @@ function playerAttack(r, c) {
 
 function computerTurn() {
   if (state.phase !== 'battle') return;
+  if (mp.active) return; // no AI in multiplayer
 
   SFX.fire();
 
@@ -639,6 +668,20 @@ function setTurnIndicator(playerTurn) {
    ========================================================= */
 
 function initGame() {
+  // Tear down any active multiplayer session
+  if (mp.active || mp.ws) {
+    mp.ws?.close();
+    mp.ws      = null;
+    mp.active  = false;
+    mp.code    = null;
+    mp.num     = null;
+    mp.myTurn  = false;
+    mp.meReady = false;
+    mp.opReady = false;
+    mp.opIn    = false;
+    mp.firing  = false;
+  }
+
   state.phase          = 'setup';
   state.playerGrid     = makeGrid();
   state.enemyGrid      = makeGrid();
@@ -653,30 +696,27 @@ function initGame() {
   state.score          = 0;
   state.ai = { mode: 'hunt', queue: [], lastHit: null, direction: null, firstHit: null, attacked: new Set() };
 
-  // Place enemy ships randomly
-  randomPlaceAll(state.enemyShips, state.enemyGrid);
-
-  // Build boards
+  // Build boards (ready for when we reveal the setup panel)
   buildBoardDOM('player-board', true);
   buildBoardDOM('enemy-board',  false);
-
-  // Build fleet status
   buildFleetStatus('player-fleet', state.playerShips);
   buildFleetStatus('enemy-fleet',  state.enemyShips);
-
-  // Build ship selector
   buildShipListUI();
 
-  // Show/hide panels
-  $('setup-phase').classList.remove('hidden');
+  // Show mode select, hide everything else
+  $('mode-select').classList.remove('hidden');
+  $('lobby').classList.add('hidden');
+  $('setup-phase').classList.add('hidden');
   $('battle-phase').classList.add('hidden');
   $('game-over').classList.add('hidden');
+  $('mp-ready-bar').classList.add('hidden');
+  $('start-btn').textContent = 'START BATTLE';
   $('start-btn').disabled = true;
   $('reset-btn').disabled = true;
 
   updateScoreDisplay();
   updateBattleStats();
-  setMsg('Select a ship below and place it on your grid!');
+  setMsg('Choose a mode to begin!');
 }
 
 function startBattle() {
@@ -751,7 +791,10 @@ $('random-btn').addEventListener('click', () => {
 
 $('reset-btn').addEventListener('click', resetSetup);
 
-$('start-btn').addEventListener('click', startBattle);
+$('start-btn').addEventListener('click', () => {
+  if (mp.active) mpSignalReady();
+  else startBattle();
+});
 
 $('play-again-btn').addEventListener('click', initGame);
 
@@ -761,6 +804,368 @@ $('mute-btn').addEventListener('click', () => {
   $('mute-btn').classList.toggle('muted', muted);
   $('mute-btn').title = muted ? 'Unmute' : 'Mute';
 });
+
+/* =========================================================
+   MODE SELECT EVENT LISTENERS
+   ========================================================= */
+
+$('sp-btn').addEventListener('click', () => {
+  mp.active = false;
+  $('mode-select').classList.add('hidden');
+  // Single player: pre-populate enemy ships and show setup
+  randomPlaceAll(state.enemyShips, state.enemyGrid);
+  buildFleetStatus('enemy-fleet', state.enemyShips);
+  $('setup-phase').classList.remove('hidden');
+  setMsg('Select a ship below and place it on your grid!');
+});
+
+$('mp-btn').addEventListener('click', () => {
+  $('mode-select').classList.add('hidden');
+  // Reset lobby to initial state
+  $('lobby-pre').classList.remove('hidden');
+  $('lobby-room').classList.add('hidden');
+  $('lobby-error').classList.add('hidden');
+  $('lobby-waiting').classList.remove('hidden');
+  $('lobby-joined').classList.add('hidden');
+  $('join-input').value = '';
+  $('lobby').classList.remove('hidden');
+  setMsg('Create a room or enter a code to join your friend!');
+});
+
+$('back-btn').addEventListener('click', () => {
+  mp.ws?.close();
+  mp.ws = null;
+  $('lobby').classList.add('hidden');
+  $('mode-select').classList.remove('hidden');
+  setMsg('Choose a mode to begin!');
+});
+
+$('create-btn').addEventListener('click', () => {
+  $('lobby-error').classList.add('hidden');
+  mpConnect(() => mpSend({ type: 'CREATE_ROOM' }));
+});
+
+$('join-btn').addEventListener('click', () => {
+  const code = $('join-input').value.toUpperCase().trim();
+  if (code.length < 2) { mpLobbyError('Enter a room code.'); return; }
+  $('lobby-error').classList.add('hidden');
+  mpConnect(() => mpSend({ type: 'JOIN_ROOM', code }));
+});
+
+$('join-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('join-btn').click();
+});
+
+/* =========================================================
+   MULTIPLAYER
+   ========================================================= */
+
+/* ---- WebSocket connection ---- */
+
+function mpConnect(onOpen) {
+  if (mp.ws && mp.ws.readyState < 2) mp.ws.close();
+  try {
+    const ws     = new WebSocket(SERVER_URL);
+    mp.ws        = ws;
+    ws.onopen    = () => onOpen();
+    ws.onmessage = e  => mpHandle(JSON.parse(e.data));
+    ws.onerror   = ()  => mpLobbyError('Cannot reach server. Is it running?');
+    ws.onclose   = ()  => {
+      if (mp.active && state.phase === 'battle') {
+        setMsg('⚠️ Connection lost.', 'sunk-msg');
+      }
+    };
+  } catch {
+    mpLobbyError('WebSocket not supported or server unreachable.');
+  }
+}
+
+function mpSend(obj) {
+  if (mp.ws?.readyState === WebSocket.OPEN) mp.ws.send(JSON.stringify(obj));
+}
+
+/* ---- Incoming message router ---- */
+
+function mpHandle(msg) {
+  switch (msg.type) {
+
+    case 'ROOM_CREATED':
+      mp.code = msg.code;
+      mp.num  = 1;
+      $('lobby-pre').classList.add('hidden');
+      $('lobby-room').classList.remove('hidden');
+      $('lobby-code-display').textContent = msg.code;
+      break;
+
+    case 'ROOM_JOINED':
+      // Player 2 joined a room — go straight to setup
+      mp.code = msg.code;
+      mp.num  = 2;
+      mp.opIn = true;
+      $('lobby').classList.add('hidden');
+      mpInitSetup();
+      setMsg(`Joined room ${msg.code}! Place your ships and click Ready.`);
+      break;
+
+    case 'OPPONENT_JOINED':
+      // Player 1 learns player 2 arrived
+      mp.opIn = true;
+      $('lobby-waiting').classList.add('hidden');
+      $('lobby-joined').classList.remove('hidden');
+      setTimeout(() => {
+        $('lobby').classList.add('hidden');
+        mpInitSetup();
+        setMsg('Opponent joined! Place your ships and click Ready.');
+      }, 1000);
+      break;
+
+    case 'OPPONENT_READY':
+      mp.opReady = true;
+      $('mp-dot-op').classList.add('ready');
+      setMsg(mp.meReady ? 'Both ready — waiting for server…' : 'Opponent is ready! Finish placing your ships.');
+      break;
+
+    case 'GAME_START':
+      mp.myTurn          = msg.yourTurn;
+      state.isPlayerTurn = mp.myTurn;
+      mpStartBattle();
+      break;
+
+    case 'ATTACK':
+      mpHandleIncomingAttack(msg);
+      break;
+
+    case 'ATTACK_RESULT':
+      mpHandleAttackResult(msg);
+      break;
+
+    case 'OPPONENT_DISCONNECTED':
+      setMsg('⚠️ Opponent disconnected.', 'sunk-msg');
+      if (state.phase === 'battle') {
+        endGame(true); // treat as win
+      } else {
+        $('lobby').classList.remove('hidden');
+        $('setup-phase').classList.add('hidden');
+        $('mp-ready-bar').classList.add('hidden');
+        $('lobby-pre').classList.remove('hidden');
+        $('lobby-room').classList.add('hidden');
+        mpLobbyError('Opponent disconnected. Create or join a new room.');
+      }
+      break;
+
+    case 'ERROR':
+      mpLobbyError(msg.text || 'Server error.');
+      break;
+  }
+}
+
+/* ---- Lobby helpers ---- */
+
+function mpLobbyError(text) {
+  const el = $('lobby-error');
+  el.textContent = text;
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 5000);
+}
+
+/* ---- Setup phase (multiplayer) ---- */
+
+function mpInitSetup() {
+  mp.active  = true;
+  mp.meReady = false;
+  mp.opReady = false;
+  mp.firing  = false;
+
+  // Fresh grids — enemy ships NOT pre-placed (we don't know them)
+  state.phase          = 'setup';
+  state.playerGrid     = makeGrid();
+  state.enemyGrid      = makeGrid();
+  state.playerShips    = SHIPS_CONFIG.map((cfg, i) => makeShip(cfg, i));
+  state.enemyShips     = [];            // unused in MP
+  state.currentShipIdx = 0;
+  state.isHoriz        = true;
+  state.shots = 0; state.hits = 0; state.sunk = 0; state.score = 0;
+
+  buildBoardDOM('player-board', true);
+  buildBoardDOM('enemy-board',  false);
+  buildFleetStatus('player-fleet', state.playerShips);
+  $('enemy-fleet').innerHTML = '';      // revealed as ships are sunk
+  buildShipListUI();
+
+  $('mode-select').classList.add('hidden');
+  $('setup-phase').classList.remove('hidden');
+  $('battle-phase').classList.add('hidden');
+  $('game-over').classList.add('hidden');
+  $('mp-ready-bar').classList.remove('hidden');
+  $('mp-dot-me').classList.remove('ready');
+  $('mp-dot-op').classList.remove('ready');
+
+  const btn = $('start-btn');
+  btn.textContent = 'READY';
+  btn.disabled = true;
+  $('reset-btn').disabled = true;
+
+  updateScoreDisplay();
+  updateBattleStats();
+}
+
+/* ---- Signal readiness ---- */
+
+function mpSignalReady() {
+  if (mp.meReady) return;
+  mp.meReady = true;
+  $('mp-dot-me').classList.add('ready');
+  $('start-btn').disabled    = true;
+  $('start-btn').textContent = 'WAITING…';
+  mpSend({ type: 'READY' });
+  setMsg(mp.opReady ? 'Both ready! Starting…' : 'Waiting for opponent to be ready…');
+}
+
+/* ---- Battle phase (multiplayer) ---- */
+
+function mpStartBattle() {
+  state.phase = 'battle';
+  $('setup-phase').classList.add('hidden');
+  $('battle-phase').classList.remove('hidden');
+  $('mp-ready-bar').classList.add('hidden');
+
+  document.querySelectorAll('#player-board .cell').forEach(cell => {
+    cell.removeEventListener('mouseover', onPlayerCellHover);
+    cell.removeEventListener('mouseout',  onPlayerCellOut);
+    cell.removeEventListener('click',     onPlayerCellClick);
+  });
+
+  refreshPlayerBoard();
+  refreshEnemyBoard();
+  setTurnIndicator(mp.myTurn);
+  setMsg(mp.myTurn
+    ? 'Battle! Click a cell in Enemy Waters to fire. 🎯'
+    : 'Battle! Waiting for opponent to fire first…');
+}
+
+/* ---- Player fires in multiplayer ---- */
+
+function mpSendAttack(r, c) {
+  if (mp.firing) return;
+  mp.firing = true;
+  refreshEnemyBoard();          // removes 'attackable' class while waiting
+  mpSend({ type: 'ATTACK', r, c });
+  setMsg('⏳ Fired! Awaiting result…');
+}
+
+/* ---- Opponent fires at us ---- */
+
+function mpHandleIncomingAttack({ r, c }) {
+  SFX.fire();
+
+  const cell = state.playerGrid[r][c];
+  cell.attacked = true;
+  const ship = cell.ship;
+
+  const result = { type: 'ATTACK_RESULT', r, c, hit: !!ship, sunk: false };
+
+  if (ship) {
+    ship.hits++;
+    if (ship.hits === ship.size) {
+      ship.sunk = true;
+      result.sunk     = true;
+      result.shipName = ship.name;
+      result.cells    = ship.cells.map(({ r: sr, c: sc }) => ({ r: sr, c: sc }));
+      ship.cells.forEach(({ r: sr, c: sc }) => {
+        getCell('player-board', sr, sc).className = 'cell sunk';
+      });
+      updateFleetDots('player-fleet', ship);
+    } else {
+      getCell('player-board', r, c).className = 'cell ship hit';
+      updateFleetDots('player-fleet', ship);
+    }
+  } else {
+    getCell('player-board', r, c).className = 'cell miss';
+  }
+
+  if (state.playerShips.every(s => s.sunk)) result.gameOver = true;
+
+  mpSend(result);
+
+  if (result.gameOver) { endGame(false); return; }
+
+  // Now it is our turn
+  mp.myTurn          = true;
+  state.isPlayerTurn = true;
+  setTurnIndicator(true);
+  refreshEnemyBoard();
+}
+
+/* ---- Result of our own attack comes back ---- */
+
+function mpHandleAttackResult(msg) {
+  const { r, c, hit, sunk, shipName, cells, gameOver } = msg;
+  mp.firing = false;
+  state.shots++;
+
+  const data = state.enemyGrid[r][c];
+  data.attacked = true;
+
+  if (hit) {
+    state.hits++;
+    state.score += SCORE.HIT;
+    data.mpHit = true;
+
+    if (sunk) {
+      data.mpSunk = true;
+      state.sunk++;
+      state.score += cells.length * SCORE.SUNK_MULT;
+      cells.forEach(({ r: sr, c: sc }) => {
+        const cd = state.enemyGrid[sr][sc];
+        cd.attacked = true; cd.mpHit = true; cd.mpSunk = true;
+        getCell('enemy-board', sr, sc).className = 'cell sunk';
+      });
+      mpRevealEnemyShip(shipName, cells.length);
+      setTimeout(() => SFX.success(), 80);
+      setMsg(`💥 You sunk the enemy ${shipName}! +${cells.length * SCORE.SUNK_MULT} bonus`, 'sunk-msg');
+    } else {
+      getCell('enemy-board', r, c).className = 'cell hit';
+      setMsg(`🔥 Hit! +${SCORE.HIT} pts`, 'hit-msg');
+    }
+  } else {
+    getCell('enemy-board', r, c).className = 'cell miss';
+    setTimeout(() => SFX.miss(), 60);
+    setMsg('💧 Miss!', 'miss-msg');
+  }
+
+  updateScoreDisplay();
+  updateBattleStats();
+
+  if (gameOver) {
+    state.score += SCORE.WIN_BONUS;
+    if (state.score > state.highScore) {
+      state.highScore = state.score;
+      localStorage.setItem('sbHighScore', state.highScore);
+    }
+    updateScoreDisplay();
+    endGame(true);
+    return;
+  }
+
+  // Opponent's turn
+  mp.myTurn          = false;
+  state.isPlayerTurn = false;
+  setTurnIndicator(false);
+  refreshEnemyBoard();
+}
+
+/* Add a revealed ship entry to the enemy fleet bar when sunk */
+function mpRevealEnemyShip(name, size) {
+  const wrap = document.createElement('div');
+  wrap.className = 'fleet-ship';
+  wrap.title     = name + ' (sunk)';
+  for (let i = 0; i < size; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'fleet-dot sunk';
+    wrap.appendChild(dot);
+  }
+  $('enemy-fleet').appendChild(wrap);
+}
 
 /* =========================================================
    BOOT
