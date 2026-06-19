@@ -2,7 +2,7 @@
 
 ## Cursor Cloud specific instructions
 
-This repository ("dynamics") contains dynamics usage samples. It includes a browser-based **Ship Battle** game (`index.html`, `style.css`, `game.js`) and a Terraform-oriented `.gitignore`.
+This repository ("dynamics") contains dynamics usage samples. It includes a browser-based **Ship Battle** game (`index.html`, `style.css`, `game.js`), the **5WhyAI** root cause analysis app (`5whyai/`), and a Terraform-oriented `.gitignore`.
 
 ### Repository state
 
@@ -45,3 +45,48 @@ Then players open: `http://<host>/index.html?server=wss://<ws-host>:<port>`
 
 #### Linting
 No lint configuration is present. Standard browser DevTools console is sufficient.
+
+---
+
+## 5WhyAI App (`5whyai/`)
+
+A professional AI-powered root cause analysis tool based on the 5 Whys method.
+
+### Stack
+- **Frontend**: React 18 + Vite (port 5173)
+- **Backend**: Express.js (port 3001) with OpenAI integration
+- **Storage**: `localStorage` for analysis history (no database required)
+
+### Running locally
+
+1. Install dependencies:
+   ```
+   cd 5whyai && npm install
+   ```
+2. Copy and configure `.env`:
+   ```
+   cp .env.example .env
+   # Add OPENAI_API_KEY if you have one (optional — app works without it using structured fallback answers)
+   ```
+3. Start backend:
+   ```
+   node server/index.js
+   ```
+4. Start frontend (separate terminal):
+   ```
+   npm run client
+   ```
+5. Open `http://localhost:5173`
+
+Or start both together:
+```
+npm run dev
+```
+
+### Testing
+- Test manually in browser: go through Welcome → Business Issue → enter problem → complete 5 Whys → view Short + Full Conclusion
+- API endpoints can be tested directly:
+  - `POST http://localhost:3001/api/next-why` — get next Why question + 5 answers
+  - `POST http://localhost:3001/api/conclusion` — generate full conclusion
+- Without an OpenAI key, structured fallback answers are used automatically
+- Check browser DevTools console for JS errors
