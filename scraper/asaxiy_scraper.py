@@ -41,15 +41,16 @@ from bs4 import BeautifulSoup
 
 # ── configuration ─────────────────────────────────────────────────────────────
 BASE_URL = "https://asaxiy.uz"
-LISTING_URL = f"{BASE_URL}/product"
+LISTING_URL = f"{BASE_URL}/product/knigi"   # Books category
 PRODUCTS_PER_PAGE = 24
-MAX_CONCURRENCY = 12            # parallel fetches
-REQUEST_DELAY = 0.2             # polite pause per worker (seconds)
-RETRY_TIMES = 3
-RETRY_DELAY = 5                 # seconds before retry
+MAX_CONCURRENCY = 5             # conservative to avoid server connection resets
+REQUEST_DELAY = 0.5             # polite pause per worker (seconds)
+RETRY_TIMES = 4
+RETRY_DELAY = 3                 # seconds before retry (exponential: 3s, 6s, 12s, 24s)
 OUTPUT_DIR = Path(__file__).parent
-JSONL_PATH = OUTPUT_DIR / "products.jsonl"
-CSV_PATH = OUTPUT_DIR / "products.csv"
+JSONL_PATH = OUTPUT_DIR / "books.jsonl"
+CSV_PATH = OUTPUT_DIR / "books.csv"
+LISTING_CHECKPOINT = OUTPUT_DIR / "books_listing_checkpoint.jsonl"  # Phase 1 cache
 
 HEADERS = {
     "User-Agent": (
@@ -294,7 +295,7 @@ async def fetch(
                     if resp.status == 200:
                         return await resp.text()
                     if resp.status in (429, 503):
-                        wait = RETRY_DELAY * attempt
+                        wait = RETRY_DELAY * (2 ** (attempt - 1))
                         log.warning(
                             "Rate limited (%s) on %s – waiting %ss",
                             resp.status, url, wait
@@ -304,8 +305,9 @@ async def fetch(
                         log.warning("HTTP %s for %s", resp.status, url)
                         return None
             except Exception as exc:
-                log.warning("Error %s (attempt %d): %s", url, attempt, exc)
-                await asyncio.sleep(RETRY_DELAY * attempt)
+                wait = RETRY_DELAY * (2 ** (attempt - 1))
+                log.warning("Error %s (attempt %d): %s – retry in %ss", url, attempt, exc, wait)
+                await asyncio.sleep(wait)
     return None
 
 
@@ -347,6 +349,11 @@ async def scrape_listing_pages(
         )
 
     log.info("Phase 1 complete – %d product URLs collected.", len(all_basics))
+    # Save checkpoint so future restarts can skip Phase 1
+    with open(LISTING_CHECKPOINT, "w", encoding="utf-8") as f:
+        for item in all_basics:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    log.info("Listing checkpoint saved to %s", LISTING_CHECKPOINT)
     return all_basics
 
 
@@ -454,7 +461,18 @@ async def main():
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENCY, ssl=False)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        basics = await scrape_listing_pages(session, semaphore)
+        # Use listing checkpoint if available (skips re-fetching all listing pages)
+        if LISTING_CHECKPOINT.exists():
+            basics = []
+            with open(LISTING_CHECKPOINT, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        basics.append(json.loads(line))
+                    except Exception:
+                        pass
+            log.info("Loaded %d products from listing checkpoint (skipping Phase 1).", len(basics))
+        else:
+            basics = await scrape_listing_pages(session, semaphore)
 
         csv_fieldnames = list(_CSV_BASE_FIELDS)
         mode = "a" if already_done else "w"
