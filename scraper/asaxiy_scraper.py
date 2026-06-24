@@ -285,10 +285,11 @@ async def fetch(
     semaphore: asyncio.Semaphore,
 ) -> str | None:
     """Fetch URL with retries; return HTML text or None on failure."""
+    # Stagger outside semaphore to avoid synchronised request bursts
+    await asyncio.sleep(REQUEST_DELAY)
     async with semaphore:
         for attempt in range(1, RETRY_TIMES + 1):
             try:
-                await asyncio.sleep(REQUEST_DELAY)
                 async with session.get(
                     url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
