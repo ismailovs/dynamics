@@ -18,6 +18,10 @@ from .queries import iter_queries
 API_ROOT = "https://www.googleapis.com/youtube/v3"
 
 
+class QuotaBudgetExceeded(RuntimeError):
+    """Raised before an API attempt would exceed the configured daily budget."""
+
+
 def parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
@@ -48,7 +52,7 @@ class YouTubeClient:
         request_json: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         max_429_retries: int = 5,
-        usage_recorder: Callable[[str], None] | None = None,
+        usage_recorder: Callable[[str], bool | None] | None = None,
     ) -> None:
         if not api_key and request_json is None:
             raise ValueError("YOUTUBE_API_KEY is required for live collection")
@@ -59,7 +63,7 @@ class YouTubeClient:
         self._usage_recorder = usage_recorder
 
     def set_usage_recorder(
-        self, recorder: Callable[[str], None] | None
+        self, recorder: Callable[[str], bool | None] | None
     ) -> None:
         self._usage_recorder = recorder
 
@@ -73,10 +77,15 @@ class YouTubeClient:
     ) -> dict[str, Any]:
         attempt = 0
         while True:
+            if (
+                self._usage_recorder is not None
+                and self._usage_recorder(resource) is False
+            ):
+                raise QuotaBudgetExceeded(
+                    f"Daily API quota budget exhausted before {resource}.list"
+                )
             try:
                 payload = self._transport(resource, params)
-                if self._usage_recorder is not None:
-                    self._usage_recorder(resource)
                 return payload
             except HTTPError as error:
                 if error.code != 429 or attempt >= self._max_429_retries:

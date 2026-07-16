@@ -15,7 +15,11 @@ from youtube_trend_pipeline.export import export_workbook
 from youtube_trend_pipeline.filtering import filter_videos
 from youtube_trend_pipeline.models import Video
 from youtube_trend_pipeline.pipeline import TrendPipeline
-from youtube_trend_pipeline.youtube import YouTubeClient, parse_duration
+from youtube_trend_pipeline.youtube import (
+    QuotaBudgetExceeded,
+    YouTubeClient,
+    parse_duration,
+)
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc)
 
@@ -233,6 +237,107 @@ class YouTubeClientTests(unittest.TestCase):
 
 
 class DiscoveryCacheTests(unittest.TestCase):
+    def test_failed_attempts_consume_persisted_quota_and_stop_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            attempts = 0
+            delays: list[float] = []
+
+            def request(
+                _resource: str, _params: dict[str, object]
+            ) -> dict[str, object]:
+                nonlocal attempts
+                attempts += 1
+                raise HTTPError("https://example.test", 429, "rate limited", {}, None)
+
+            with Database(Path(directory) / "trends.db") as database:
+                client = YouTubeClient(
+                    "test",
+                    request_json=request,
+                    sleep=delays.append,
+                    usage_recorder=lambda resource: database.reserve_api_request(
+                        resource, NOW.date(), 200
+                    ),
+                )
+                with self.assertRaises(QuotaBudgetExceeded):
+                    client.search_page("robots", NOW - timedelta(days=1), NOW)
+
+                self.assertEqual(attempts, 2)
+                self.assertEqual(delays, [1.0, 2.0])
+                self.assertEqual(database.quota_units_used(NOW.date()), 200)
+
+    def test_pending_details_are_deferred_when_quota_is_reserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                Settings(),
+                database_path=Path(directory) / "trends.db",
+                daily_quota_units=1,
+            )
+            calls = 0
+
+            def request(
+                _resource: str, _params: dict[str, object]
+            ) -> dict[str, object]:
+                nonlocal calls
+                calls += 1
+                return {"items": []}
+
+            with Database(settings.database_path) as database:
+                database.record_search_page(
+                    "AI and technology",
+                    "robots",
+                    NOW - timedelta(days=14),
+                    NOW,
+                    ["one", "two"],
+                    "",
+                    discovered_at=NOW,
+                )
+                result = TrendPipeline(settings, database).collect(
+                    YouTubeClient("test", request_json=request), now=NOW
+                )
+
+                self.assertEqual(result.accepted, [])
+                self.assertEqual(calls, 0)
+                self.assertEqual(len(database.pending_discoveries()), 2)
+
+    def test_refresh_defers_batches_after_quota_is_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                Settings(),
+                database_path=Path(directory) / "trends.db",
+                daily_quota_units=1,
+            )
+            batch_sizes: list[int] = []
+
+            def request(resource: str, params: dict[str, object]) -> dict[str, object]:
+                self.assertEqual(resource, "videos")
+                ids = str(params["id"]).split(",")
+                batch_sizes.append(len(ids))
+                return {
+                    "items": [
+                        {
+                            "id": video_id,
+                            "statistics": {
+                                "viewCount": "2000",
+                                "likeCount": "100",
+                                "commentCount": "10",
+                            },
+                        }
+                        for video_id in ids
+                    ]
+                }
+
+            videos = [make_video(index) for index in range(51)]
+            with Database(settings.database_path) as database:
+                pipeline = TrendPipeline(settings, database)
+                pipeline.ingest(videos, collected_at=NOW)
+                saved = pipeline.refresh(
+                    YouTubeClient("test", request_json=request), now=NOW
+                )
+
+                self.assertEqual(saved, 50)
+                self.assertEqual(batch_sizes, [50])
+                self.assertEqual(database.quota_units_used(NOW.date()), 1)
+
     def test_daily_quota_survives_restart_and_oldest_queries_advance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = replace(

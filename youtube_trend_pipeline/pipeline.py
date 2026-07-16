@@ -11,7 +11,7 @@ from .database import Database
 from .filtering import filter_videos, title_fingerprint
 from .models import FilterResult, Video
 from .queries import iter_queries
-from .youtube import YouTubeClient
+from .youtube import QuotaBudgetExceeded, YouTubeClient
 
 
 class TrendPipeline:
@@ -40,16 +40,34 @@ class TrendPipeline:
         pending = self.database.pending_discoveries()
         if not pending:
             return FilterResult(accepted=[], rejected={})
-        videos = client.fetch_videos(pending)
+        pending_items = list(pending.items())
+        attempted_ids: set[str] = set()
+        videos: list[Video] = []
+        for offset in range(0, len(pending_items), 50):
+            batch = dict(pending_items[offset : offset + 50])
+            projected_active = active_count + len(attempted_ids) + len(batch)
+            refresh_reserve = (projected_active + 49) // 50
+            remaining = (
+                self.settings.daily_quota_units
+                - self.database.quota_units_used(now.date())
+                - refresh_reserve
+            )
+            if remaining < 2:
+                break
+            try:
+                batch_videos = client.fetch_videos(batch)
+            except QuotaBudgetExceeded:
+                break
+            attempted_ids.update(batch)
+            videos.extend(batch_videos)
         result = self.ingest(videos, collected_at=now)
-        requested_ids = set(pending)
         fetched_ids = {video.video_id for video in videos}
         accepted_ids = {video.video_id for video in result.accepted}
         self.database.mark_discovery_details(accepted_ids, "accepted", now)
         self.database.mark_discovery_details(
             fetched_ids - accepted_ids, "rejected", now
         )
-        unavailable_ids = requested_ids - fetched_ids
+        unavailable_ids = attempted_ids - fetched_ids
         self.database.mark_discovery_details(unavailable_ids, "unavailable", now)
         if unavailable_ids:
             result.rejected["unavailable_metadata"] = len(unavailable_ids)
@@ -91,9 +109,20 @@ class TrendPipeline:
         active_rows = self.database.videos_published_since(
             now - timedelta(days=self.settings.window_days)
         )
-        statistics = client.refresh_statistics(
-            row["video_id"] for row in active_rows
-        )
+        video_ids = [row["video_id"] for row in active_rows]
+        statistics: dict[str, tuple[int, int, int]] = {}
+        for offset in range(0, len(video_ids), 50):
+            if (
+                self.database.quota_units_used(now.date())
+                >= self.settings.daily_quota_units
+            ):
+                break
+            try:
+                statistics.update(
+                    client.refresh_statistics(video_ids[offset : offset + 50])
+                )
+            except QuotaBudgetExceeded:
+                break
         return self.database.snapshot(statistics)
 
     def snapshot_current(self) -> int:
@@ -154,9 +183,12 @@ class TrendPipeline:
                 window_end,
                 page_token,
             ) = pages.popleft()
-            video_ids, next_page_token = client.search_page(
-                query, window_start, window_end, page_token
-            )
+            try:
+                video_ids, next_page_token = client.search_page(
+                    query, window_start, window_end, page_token
+                )
+            except QuotaBudgetExceeded:
+                break
             self.database.record_search_page(
                 category,
                 query,
@@ -207,7 +239,9 @@ class TrendPipeline:
     ) -> None:
         if hasattr(client, "set_usage_recorder"):
             client.set_usage_recorder(
-                lambda resource: self.database.record_api_request(
-                    resource, now.date()
+                lambda resource: self.database.reserve_api_request(
+                    resource,
+                    now.date(),
+                    self.settings.daily_quota_units,
                 )
             )

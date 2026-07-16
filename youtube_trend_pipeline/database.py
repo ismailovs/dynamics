@@ -260,9 +260,20 @@ class Database:
     def record_api_request(
         self, resource: str, usage_date: date | None = None
     ) -> None:
+        self.reserve_api_request(resource, usage_date)
+
+    def reserve_api_request(
+        self,
+        resource: str,
+        usage_date: date | None = None,
+        daily_limit: int | None = None,
+    ) -> bool:
         usage_date = usage_date or datetime.now(timezone.utc).date()
         units = 100 if resource == "search" else 1
         with self.connection:
+            current = self.quota_units_used(usage_date)
+            if daily_limit is not None and current + units > daily_limit:
+                return False
             self.connection.execute(
                 """
                 INSERT INTO api_quota_usage VALUES (?, ?)
@@ -271,6 +282,7 @@ class Database:
                 """,
                 (usage_date.isoformat(), units),
             )
+        return True
 
     def quota_units_used(self, usage_date: date | None = None) -> int:
         usage_date = usage_date or datetime.now(timezone.utc).date()
