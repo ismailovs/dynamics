@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+from openpyxl import load_workbook
+
+from youtube_trend_pipeline.config import Settings
+from youtube_trend_pipeline.database import Database
+from youtube_trend_pipeline.export import export_workbook
+from youtube_trend_pipeline.filtering import filter_videos
+from youtube_trend_pipeline.models import Video
+from youtube_trend_pipeline.pipeline import TrendPipeline
+from youtube_trend_pipeline.youtube import YouTubeClient, parse_duration
+
+NOW = datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc)
+
+
+def make_video(
+    index: int,
+    topic: str = "ai",
+    **overrides: object,
+) -> Video:
+    if topic == "ai":
+        title = f"How AI Agents Transform Factory Work Episode {index}"
+        description = (
+            "Inside the future of artificial intelligence agents and automation "
+            "for office and factory work."
+        )
+        category = "AI and technology"
+    else:
+        title = f"Why Nuclear Energy Is Returning Project {index}"
+        description = (
+            "The engineering of nuclear reactors and the future of clean energy "
+            "infrastructure."
+        )
+        category = "Energy and infrastructure"
+    values: dict[str, object] = {
+        "video_id": f"{topic}-{index}",
+        "title": title,
+        "description": description,
+        "channel_id": f"channel-{topic}-{index % 3}",
+        "channel_title": f"Channel {topic} {index % 3}",
+        "published_at": NOW - timedelta(days=(index % 5) + 1),
+        "duration_seconds": 900 + index,
+        "view_count": 10_000 + index * 1_000,
+        "like_count": 500 + index * 10,
+        "comment_count": 50 + index,
+        "subscriber_count": 20_000 + index * 100,
+        "tags": [topic, "documentary", "engineering"],
+        "language": "en",
+        "thumbnail_url": f"https://example.com/{topic}-{index}.jpg",
+        "category": "28",
+        "discovery_category": category,
+    }
+    values.update(overrides)
+    return Video(**values)  # type: ignore[arg-type]
+
+
+class DurationAndFilterTests(unittest.TestCase):
+    def test_iso_duration_parser(self) -> None:
+        self.assertEqual(parse_duration("PT8M"), 480)
+        self.assertEqual(parse_duration("PT1H2M3S"), 3723)
+
+    def test_filters_unsuitable_and_duplicate_videos(self) -> None:
+        good = make_video(1)
+        duplicate = make_video(2, title=good.title, channel_id=good.channel_id)
+        short = make_video(3, duration_seconds=120)
+        stream = make_video(4, live_broadcast_content="live")
+        music = make_video(5, category="10")
+        non_english = make_video(6, language="es")
+        missing_stats = make_video(7, like_count=-1)
+
+        result = filter_videos(
+            [good, duplicate, short, stream, music, non_english, missing_stats]
+        )
+
+        self.assertEqual([video.video_id for video in result.accepted], ["ai-1"])
+        self.assertEqual(result.rejected["duplicate_channel_title"], 1)
+        self.assertEqual(result.rejected["duration"], 1)
+        self.assertEqual(result.rejected["livestream"], 1)
+        self.assertEqual(result.rejected["music"], 1)
+        self.assertEqual(result.rejected["non_english"], 1)
+        self.assertEqual(result.rejected["missing_statistics"], 1)
+
+
+class YouTubeClientTests(unittest.TestCase):
+    def test_discovery_sends_rolling_window_and_deduplicates(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def request(resource: str, params: dict[str, object]) -> dict[str, object]:
+            calls.append((resource, params))
+            return {
+                "items": [
+                    {"id": {"videoId": "one"}},
+                    {"id": {"videoId": "one"}},
+                ]
+            }
+
+        client = YouTubeClient("test", request_json=request)
+        result = client.discover(
+            NOW - timedelta(days=14),
+            NOW,
+            max_search_requests=2,
+        )
+
+        self.assertEqual(result, {"one": "AI and technology"})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1]["maxResults"], 50)
+        self.assertEqual(calls[0][1]["order"], "date")
+        self.assertEqual(calls[0][1]["type"], "video")
+        self.assertEqual(calls[0][1]["publishedAfter"], "2026-07-02T10:00:00Z")
+        self.assertEqual(calls[0][1]["publishedBefore"], "2026-07-16T10:00:00Z")
+
+
+class EndToEndTests(unittest.TestCase):
+    def test_database_analysis_and_six_sheet_export(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = replace(
+                Settings(),
+                database_path=root / "trends.db",
+                report_path=root / "trends.xlsx",
+                target_clusters=2,
+                min_theme_videos=5,
+            )
+            videos = [make_video(index, "ai") for index in range(5)]
+            videos += [make_video(index, "nuclear") for index in range(5)]
+
+            with Database(settings.database_path) as database:
+                pipeline = TrendPipeline(settings, database)
+                result = pipeline.ingest(videos, collected_at=NOW - timedelta(days=1))
+                self.assertEqual(len(result.accepted), 10)
+                database.snapshot(snapshot_date=date(2026, 7, 15))
+                increased = {
+                    video.video_id: (
+                        video.view_count + 2_000 + index * 100,
+                        video.like_count + 20,
+                        video.comment_count + 2,
+                    )
+                    for index, video in enumerate(videos)
+                }
+                database.snapshot(increased, snapshot_date=date(2026, 7, 16))
+
+                self.assertEqual(pipeline.analyze(now=NOW), 2)
+                themes = database.themes()
+                self.assertTrue(all(theme["median_view_velocity"] > 0 for theme in themes))
+                self.assertTrue(all(theme["video_count"] == 5 for theme in themes))
+                report = export_workbook(database, settings.report_path)
+
+            workbook = load_workbook(report, read_only=True)
+            self.assertEqual(
+                workbook.sheetnames,
+                [
+                    "Top 1000 Themes",
+                    "Best Video Examples",
+                    "Fastest Growing",
+                    "Underserved Themes",
+                    "Video Data",
+                    "Methodology",
+                ],
+            )
+            self.assertEqual(workbook["Video Data"].max_row, 11)
+            self.assertEqual(workbook["Top 1000 Themes"].max_row, 3)
+
+
+if __name__ == "__main__":
+    unittest.main()

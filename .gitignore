@@ -39,3 +39,10 @@ terraform.rc
 # Python
 __pycache__/
 *.py[cod]
+.venv/
+.env
+
+# YouTube trend pipeline output
+youtube_trends.db
+youtube_trends.db-*
+youtube_trends.xlsx
