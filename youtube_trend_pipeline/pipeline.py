@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from .analytics import build_themes
@@ -9,6 +10,7 @@ from .config import Settings
 from .database import Database
 from .filtering import filter_videos, title_fingerprint
 from .models import FilterResult, Video
+from .queries import iter_queries
 from .youtube import YouTubeClient
 
 
@@ -23,12 +25,30 @@ class TrendPipeline:
         now = now or datetime.now(timezone.utc)
         published_after = now - timedelta(days=self.settings.window_days)
         active_count = len(self.database.videos_published_since(published_after))
-        discovered = client.discover(
-            published_after=published_after,
-            published_before=now,
-            max_search_requests=self._search_request_budget(active_count),
+        pending_count = len(self.database.pending_discoveries())
+        self._discover_and_cache(
+            client,
+            published_after,
+            now,
+            self._search_request_budget(active_count, pending_count),
         )
-        return self.ingest(client.fetch_videos(discovered), collected_at=now)
+        pending = self.database.pending_discoveries()
+        if not pending:
+            return FilterResult(accepted=[], rejected={})
+        videos = client.fetch_videos(pending)
+        result = self.ingest(videos, collected_at=now)
+        requested_ids = set(pending)
+        fetched_ids = {video.video_id for video in videos}
+        accepted_ids = {video.video_id for video in result.accepted}
+        self.database.mark_discovery_details(accepted_ids, "accepted", now)
+        self.database.mark_discovery_details(
+            fetched_ids - accepted_ids, "rejected", now
+        )
+        unavailable_ids = requested_ids - fetched_ids
+        self.database.mark_discovery_details(unavailable_ids, "unavailable", now)
+        if unavailable_ids:
+            result.rejected["unavailable_metadata"] = len(unavailable_ids)
+        return result
 
     def ingest(
         self, videos: list[Video], collected_at: datetime | None = None
@@ -89,10 +109,61 @@ class TrendPipeline:
         self.database.replace_themes(themes)
         return len(themes)
 
-    def _search_request_budget(self, active_video_count: int) -> int:
+    def _discover_and_cache(
+        self,
+        client: YouTubeClient,
+        published_after: datetime,
+        published_before: datetime,
+        request_budget: int,
+    ) -> int:
+        pages = deque()
+        for category, query in iter_queries():
+            work = self.database.search_work(
+                category, query, published_after, published_before
+            )
+            if work is not None:
+                pages.append((category, query, *work))
+
+        request_count = 0
+        while pages and request_count < request_budget:
+            category, query, window_start, window_end, page_token = pages.popleft()
+            video_ids, next_page_token = client.search_page(
+                query, window_start, window_end, page_token
+            )
+            self.database.record_search_page(
+                category,
+                query,
+                window_start,
+                window_end,
+                video_ids,
+                next_page_token,
+                discovered_at=published_before,
+            )
+            request_count += 1
+            if next_page_token:
+                pages.append(
+                    (
+                        category,
+                        query,
+                        window_start,
+                        window_end,
+                        next_page_token,
+                    )
+                )
+        return request_count
+
+    def _search_request_budget(
+        self, active_video_count: int, pending_video_count: int = 0
+    ) -> int:
         """Reserve quota for details and one refresh of every active video."""
         existing_refresh_units = (active_video_count + 49) // 50
-        remaining = max(self.settings.daily_quota_units - existing_refresh_units, 0)
+        pending_batches = (pending_video_count + 49) // 50
+        remaining = max(
+            self.settings.daily_quota_units
+            - existing_refresh_units
+            - pending_batches * 3,
+            0,
+        )
         # Each search costs 100 units and can trigger one videos.list, one
         # channels.list, and one later refresh batch at one unit each.
         quota_limited_requests = remaining // 103

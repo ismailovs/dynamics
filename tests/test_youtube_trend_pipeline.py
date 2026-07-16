@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 
 from openpyxl import load_workbook
 
@@ -58,6 +59,29 @@ def make_video(
     }
     values.update(overrides)
     return Video(**values)  # type: ignore[arg-type]
+
+
+def _api_video_item(
+    video_id: str, duration: str = "PT12M"
+) -> dict[str, object]:
+    return {
+        "id": video_id,
+        "snippet": {
+            "title": f"How Technology Changes the World {video_id}",
+            "description": "Inside the engineering and technology story.",
+            "channelId": f"channel-{video_id}",
+            "channelTitle": "Channel",
+            "publishedAt": "2026-07-10T00:00:00Z",
+            "categoryId": "28",
+            "defaultLanguage": "en",
+        },
+        "contentDetails": {"duration": duration},
+        "statistics": {
+            "viewCount": "1000",
+            "likeCount": "50",
+            "commentCount": "5",
+        },
+    }
 
 
 class DurationAndFilterTests(unittest.TestCase):
@@ -173,6 +197,121 @@ class YouTubeClientTests(unittest.TestCase):
             {"video": "AI and technology"}
         )[0]
         self.assertEqual(video.subscriber_count, -1)
+
+    def test_retries_429_with_exponential_backoff(self) -> None:
+        attempts = 0
+        delays: list[float] = []
+
+        def request(_resource: str, _params: dict[str, object]) -> dict[str, object]:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 4:
+                raise HTTPError("https://example.test", 429, "rate limited", {}, None)
+            return {"items": []}
+
+        client = YouTubeClient("test", request_json=request, sleep=delays.append)
+        client.search_page("robots", NOW - timedelta(days=1), NOW)
+
+        self.assertEqual(attempts, 4)
+        self.assertEqual(delays, [1.0, 2.0, 4.0])
+
+    def test_video_details_are_batched_at_fifty_ids(self) -> None:
+        video_batch_sizes: list[int] = []
+
+        def request(resource: str, params: dict[str, object]) -> dict[str, object]:
+            if resource == "channels":
+                return {"items": []}
+            ids = str(params["id"]).split(",")
+            video_batch_sizes.append(len(ids))
+            return {"items": [_api_video_item(video_id) for video_id in ids]}
+
+        discovered = {f"video-{index}": "AI and technology" for index in range(51)}
+        videos = YouTubeClient("test", request_json=request).fetch_videos(discovered)
+
+        self.assertEqual(len(videos), 51)
+        self.assertEqual(video_batch_sizes, [50, 1])
+
+
+class DiscoveryCacheTests(unittest.TestCase):
+    def test_collection_saves_all_ids_and_reuses_completed_search_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                Settings(),
+                database_path=Path(directory) / "trends.db",
+            )
+            calls: list[tuple[str, dict[str, object]]] = []
+
+            def request(resource: str, params: dict[str, object]) -> dict[str, object]:
+                calls.append((resource, params))
+                if resource == "search":
+                    return {
+                        "items": [
+                            {"id": {"videoId": "accepted"}},
+                            {"id": {"videoId": "accepted"}},
+                            {"id": {"videoId": "too-short"}},
+                        ]
+                    }
+                if resource == "channels":
+                    return {"items": []}
+                return {
+                    "items": [
+                        _api_video_item("accepted"),
+                        _api_video_item("too-short", duration="PT2M"),
+                    ]
+                }
+
+            client = YouTubeClient("test", request_json=request)
+            with Database(settings.database_path) as database:
+                pipeline = TrendPipeline(settings, database)
+                first = pipeline.collect(client, now=NOW)
+                search_calls = sum(resource == "search" for resource, _ in calls)
+                detail_calls = sum(resource == "videos" for resource, _ in calls)
+
+                self.assertEqual(len(first.accepted), 1)
+                self.assertEqual(len(database.discovered_videos()), 2)
+                statuses = {
+                    row["video_id"]: row["details_status"]
+                    for row in database.discovered_videos()
+                }
+                self.assertEqual(
+                    statuses, {"accepted": "accepted", "too-short": "rejected"}
+                )
+                self.assertEqual(search_calls, 60)
+                self.assertEqual(detail_calls, 1)
+
+                second = pipeline.collect(client, now=NOW)
+
+                self.assertEqual(second.accepted, [])
+                self.assertEqual(
+                    sum(resource == "search" for resource, _ in calls),
+                    search_calls,
+                )
+                self.assertEqual(
+                    sum(resource == "videos" for resource, _ in calls),
+                    detail_calls,
+                )
+
+    def test_incomplete_search_resumes_from_cached_page_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with Database(Path(directory) / "trends.db") as database:
+                database.record_search_page(
+                    "AI and technology",
+                    "robots",
+                    NOW - timedelta(days=14),
+                    NOW,
+                    ["one"],
+                    "next-page",
+                    discovered_at=NOW,
+                )
+                work = database.search_work(
+                    "AI and technology",
+                    "robots",
+                    NOW - timedelta(days=14),
+                    NOW,
+                )
+
+                self.assertIsNotNone(work)
+                self.assertEqual(work[2], "next-page")  # type: ignore[index]
 
 
 class EndToEndTests(unittest.TestCase):

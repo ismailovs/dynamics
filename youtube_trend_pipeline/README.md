@@ -7,8 +7,13 @@ theme clustering, opportunity scoring, SQLite storage, and Excel reporting.
 
 - Rotates a precise rolling 14-day UTC publication window across a balanced
   60-query matrix in ten categories.
-- Fetches video, channel, and current public statistics through YouTube Data API
-  v3, deduplicating IDs before detail requests.
+- Uses `search.list` only for up to 50 video IDs per page, writes every ID to a
+  deduplicated discovery ledger immediately, and checkpoints each query/window
+  page so completed searches are not repeated.
+- Fetches video, channel, and current public statistics through cheaper batched
+  YouTube Data API v3 endpoints, processing only pending discovery IDs.
+- Retries HTTP 429 responses up to five times with 1, 2, 4, 8, and 16-second
+  exponential delays.
 - Keeps English videos from 8–60 minutes and excludes live/upcoming streams,
   music, trailers, reuploads, missing statistics, and same-channel title
   duplicates.
@@ -101,6 +106,10 @@ Cron example (all times are server-local):
 
 `refresh` writes the daily snapshot, so a separate 04:00 snapshot command would
 only overwrite the same UTC-date row.
+
+Search checkpoints are restart-safe. If a paginated query is interrupted, its
+next page token is retained; after a query interval completes, the following run
+searches only from that interval's end rather than repeating the 14-day range.
 
 ## Quota and data limitations
 

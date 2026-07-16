@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import deque
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -44,16 +46,62 @@ class YouTubeClient:
         self,
         api_key: str,
         request_json: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        max_429_retries: int = 5,
     ) -> None:
         if not api_key and request_json is None:
             raise ValueError("YOUTUBE_API_KEY is required for live collection")
         self.api_key = api_key
-        self._request_json = request_json or self._http_request
+        self._transport = request_json or self._http_request
+        self._sleep = sleep
+        self._max_429_retries = max_429_retries
 
     def _http_request(self, resource: str, params: dict[str, Any]) -> dict[str, Any]:
         query = urlencode({**params, "key": self.api_key})
         with urlopen(f"{API_ROOT}/{resource}?{query}", timeout=30) as response:
             return json.load(response)
+
+    def _request_json(
+        self, resource: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        attempt = 0
+        while True:
+            try:
+                return self._transport(resource, params)
+            except HTTPError as error:
+                if error.code != 429 or attempt >= self._max_429_retries:
+                    raise
+                self._sleep(float(2**attempt))
+                attempt += 1
+
+    def search_page(
+        self,
+        query: str,
+        published_after: datetime,
+        published_before: datetime,
+        page_token: str = "",
+    ) -> tuple[list[str], str]:
+        """Use search.list only to return up to 50 unique video IDs."""
+        params: dict[str, Any] = {
+            "part": "snippet",
+            "q": query,
+            "type": "video",
+            "order": "date",
+            "maxResults": 50,
+            "publishedAfter": published_after.isoformat().replace("+00:00", "Z"),
+            "publishedBefore": published_before.isoformat().replace("+00:00", "Z"),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        payload = self._request_json("search", params)
+        video_ids = list(
+            dict.fromkeys(
+                video_id
+                for item in payload.get("items", [])
+                if (video_id := item.get("id", {}).get("videoId"))
+            )
+        )
+        return video_ids, payload.get("nextPageToken", "")
 
     def discover(
         self,
@@ -67,24 +115,12 @@ class YouTubeClient:
         pages = deque((category, query, "") for category, query in iter_queries())
         while pages and request_count < max_search_requests:
             category, query, page_token = pages.popleft()
-            params: dict[str, Any] = {
-                "part": "snippet",
-                "q": query,
-                "type": "video",
-                "order": "date",
-                "maxResults": 50,
-                "publishedAfter": published_after.isoformat().replace("+00:00", "Z"),
-                "publishedBefore": published_before.isoformat().replace("+00:00", "Z"),
-            }
-            if page_token:
-                params["pageToken"] = page_token
-            payload = self._request_json("search", params)
+            video_ids, next_page = self.search_page(
+                query, published_after, published_before, page_token
+            )
             request_count += 1
-            for item in payload.get("items", []):
-                video_id = item.get("id", {}).get("videoId")
-                if video_id:
-                    discovered.setdefault(video_id, category)
-            next_page = payload.get("nextPageToken", "")
+            for video_id in video_ids:
+                discovered.setdefault(video_id, category)
             if next_page:
                 pages.append((category, query, next_page))
         return discovered

@@ -36,6 +36,28 @@ CREATE TABLE IF NOT EXISTS videos (
     UNIQUE(channel_id, title_fingerprint)
 );
 
+CREATE TABLE IF NOT EXISTS discovered_videos (
+    video_id TEXT PRIMARY KEY,
+    discovery_category TEXT NOT NULL,
+    discovery_query TEXT NOT NULL,
+    first_discovered_at TIMESTAMP NOT NULL,
+    last_discovered_at TIMESTAMP NOT NULL,
+    details_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(details_status IN ('pending', 'accepted', 'rejected', 'unavailable')),
+    details_checked_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS search_cache (
+    category TEXT NOT NULL,
+    query TEXT NOT NULL,
+    window_start TIMESTAMP NOT NULL,
+    window_end TIMESTAMP NOT NULL,
+    next_page_token TEXT,
+    completed_at TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (category, query)
+);
+
 CREATE TABLE IF NOT EXISTS video_snapshots (
     video_id TEXT NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
     snapshot_date DATE NOT NULL,
@@ -72,6 +94,8 @@ CREATE TABLE IF NOT EXISTS theme_videos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);
+CREATE INDEX IF NOT EXISTS idx_discovered_details_status
+ON discovered_videos(details_status);
 CREATE INDEX IF NOT EXISTS idx_snapshots_video_date
 ON video_snapshots(video_id, snapshot_date);
 """
@@ -99,6 +123,128 @@ class Database:
             "SELECT channel_id, title_fingerprint FROM videos"
         )
         return {(row["channel_id"], row["title_fingerprint"]) for row in rows}
+
+    def search_work(
+        self,
+        category: str,
+        query: str,
+        rolling_after: datetime,
+        published_before: datetime,
+    ) -> tuple[datetime, datetime, str] | None:
+        row = self.connection.execute(
+            "SELECT * FROM search_cache WHERE category=? AND query=?",
+            (category, query),
+        ).fetchone()
+        if row is not None and row["next_page_token"] is not None:
+            return (
+                datetime.fromisoformat(row["window_start"]),
+                datetime.fromisoformat(row["window_end"]),
+                row["next_page_token"],
+            )
+        published_after = rolling_after
+        if row is not None:
+            published_after = max(
+                published_after, datetime.fromisoformat(row["window_end"])
+            )
+        if published_after >= published_before:
+            return None
+        return published_after, published_before, ""
+
+    def record_search_page(
+        self,
+        category: str,
+        query: str,
+        published_after: datetime,
+        published_before: datetime,
+        video_ids: Iterable[str],
+        next_page_token: str,
+        discovered_at: datetime | None = None,
+    ) -> int:
+        discovered_at = discovered_at or datetime.now(timezone.utc)
+        unique_ids = set(video_ids)
+        completed_at = None if next_page_token else discovered_at.isoformat()
+        stored_token = next_page_token or None
+        with self.connection:
+            for video_id in unique_ids:
+                self.connection.execute(
+                    """
+                    INSERT INTO discovered_videos (
+                        video_id, discovery_category, discovery_query,
+                        first_discovered_at, last_discovered_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(video_id) DO UPDATE SET
+                        last_discovered_at=excluded.last_discovered_at
+                    """,
+                    (
+                        video_id,
+                        category,
+                        query,
+                        discovered_at.isoformat(),
+                        discovered_at.isoformat(),
+                    ),
+                )
+            self.connection.execute(
+                """
+                INSERT INTO search_cache VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(category, query) DO UPDATE SET
+                    window_start=excluded.window_start,
+                    window_end=excluded.window_end,
+                    next_page_token=excluded.next_page_token,
+                    completed_at=excluded.completed_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    category,
+                    query,
+                    published_after.isoformat(),
+                    published_before.isoformat(),
+                    stored_token,
+                    completed_at,
+                    discovered_at.isoformat(),
+                ),
+            )
+        return len(unique_ids)
+
+    def pending_discoveries(self) -> dict[str, str]:
+        return {
+            row["video_id"]: row["discovery_category"]
+            for row in self.connection.execute(
+                """
+                SELECT video_id, discovery_category
+                FROM discovered_videos
+                WHERE details_status='pending'
+                ORDER BY first_discovered_at, video_id
+                """
+            )
+        }
+
+    def mark_discovery_details(
+        self,
+        video_ids: Iterable[str],
+        status: str,
+        checked_at: datetime | None = None,
+    ) -> int:
+        if status not in {"accepted", "rejected", "unavailable"}:
+            raise ValueError(f"Unsupported discovery status: {status}")
+        checked_at = checked_at or datetime.now(timezone.utc)
+        ids = list(set(video_ids))
+        with self.connection:
+            self.connection.executemany(
+                """
+                UPDATE discovered_videos
+                SET details_status=?, details_checked_at=?
+                WHERE video_id=?
+                """,
+                [(status, checked_at.isoformat(), video_id) for video_id in ids],
+            )
+        return len(ids)
+
+    def discovered_videos(self) -> list[sqlite3.Row]:
+        return list(
+            self.connection.execute(
+                "SELECT * FROM discovered_videos ORDER BY first_discovered_at, video_id"
+            )
+        )
 
     def upsert_videos(
         self, videos: Iterable[Video], collected_at: datetime | None = None
