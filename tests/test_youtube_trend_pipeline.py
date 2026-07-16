@@ -233,6 +233,44 @@ class YouTubeClientTests(unittest.TestCase):
 
 
 class DiscoveryCacheTests(unittest.TestCase):
+    def test_daily_quota_survives_restart_and_oldest_queries_advance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                Settings(),
+                database_path=Path(directory) / "trends.db",
+                daily_quota_units=206,
+            )
+            searched_queries: list[str] = []
+
+            def request(resource: str, params: dict[str, object]) -> dict[str, object]:
+                self.assertEqual(resource, "search")
+                searched_queries.append(str(params["q"]))
+                return {"items": []}
+
+            with Database(settings.database_path) as database:
+                pipeline = TrendPipeline(settings, database)
+                pipeline.collect(
+                    YouTubeClient("test", request_json=request), now=NOW
+                )
+                first_day_queries = searched_queries.copy()
+                self.assertEqual(len(first_day_queries), 2)
+                self.assertEqual(database.quota_units_used(NOW.date()), 200)
+
+                pipeline.collect(
+                    YouTubeClient("test", request_json=request), now=NOW
+                )
+                self.assertEqual(searched_queries, first_day_queries)
+
+                next_day = NOW + timedelta(days=1)
+                pipeline.collect(
+                    YouTubeClient("test", request_json=request), now=next_day
+                )
+                second_day_queries = searched_queries[2:]
+                self.assertEqual(len(second_day_queries), 2)
+                self.assertTrue(
+                    set(first_day_queries).isdisjoint(second_day_queries)
+                )
+
     def test_collection_saves_all_ids_and_reuses_completed_search_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = replace(

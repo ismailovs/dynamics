@@ -48,6 +48,7 @@ class YouTubeClient:
         request_json: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         max_429_retries: int = 5,
+        usage_recorder: Callable[[str], None] | None = None,
     ) -> None:
         if not api_key and request_json is None:
             raise ValueError("YOUTUBE_API_KEY is required for live collection")
@@ -55,6 +56,12 @@ class YouTubeClient:
         self._transport = request_json or self._http_request
         self._sleep = sleep
         self._max_429_retries = max_429_retries
+        self._usage_recorder = usage_recorder
+
+    def set_usage_recorder(
+        self, recorder: Callable[[str], None] | None
+    ) -> None:
+        self._usage_recorder = recorder
 
     def _http_request(self, resource: str, params: dict[str, Any]) -> dict[str, Any]:
         query = urlencode({**params, "key": self.api_key})
@@ -67,7 +74,10 @@ class YouTubeClient:
         attempt = 0
         while True:
             try:
-                return self._transport(resource, params)
+                payload = self._transport(resource, params)
+                if self._usage_recorder is not None:
+                    self._usage_recorder(resource)
+                return payload
             except HTTPError as error:
                 if error.code != 429 or attempt >= self._max_429_retries:
                     raise

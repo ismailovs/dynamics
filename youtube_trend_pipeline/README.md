@@ -14,6 +14,8 @@ theme clustering, opportunity scoring, SQLite storage, and Excel reporting.
   YouTube Data API v3 endpoints, processing only pending discovery IDs.
 - Retries HTTP 429 responses up to five times with 1, 2, 4, 8, and 16-second
   exponential delays.
+- Persists successful API request costs by UTC date, so process restarts cannot
+  reset the configured daily quota budget.
 - Keeps English videos from 8–60 minutes and excludes live/upcoming streams,
   music, trailers, reuploads, missing statistics, and same-channel title
   duplicates.
@@ -110,6 +112,8 @@ only overwrite the same UTC-date row.
 Search checkpoints are restart-safe. If a paginated query is interrupted, its
 next page token is retained; after a query interval completes, the following run
 searches only from that interval's end rather than repeating the 14-day range.
+Pending work is ordered by its oldest checkpoint, with never-run queries first,
+so reduced budgets rotate fairly through the full matrix.
 
 ## Quota and data limitations
 

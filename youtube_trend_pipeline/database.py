@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS search_cache (
     PRIMARY KEY (category, query)
 );
 
+CREATE TABLE IF NOT EXISTS api_quota_usage (
+    usage_date DATE PRIMARY KEY,
+    units_used INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS video_snapshots (
     video_id TEXT NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
     snapshot_date DATE NOT NULL,
@@ -130,7 +135,7 @@ class Database:
         query: str,
         rolling_after: datetime,
         published_before: datetime,
-    ) -> tuple[datetime, datetime, str] | None:
+    ) -> tuple[datetime, datetime, str, datetime] | None:
         row = self.connection.execute(
             "SELECT * FROM search_cache WHERE category=? AND query=?",
             (category, query),
@@ -140,6 +145,7 @@ class Database:
                 datetime.fromisoformat(row["window_start"]),
                 datetime.fromisoformat(row["window_end"]),
                 row["next_page_token"],
+                datetime.fromisoformat(row["updated_at"]),
             )
         published_after = rolling_after
         if row is not None:
@@ -148,7 +154,12 @@ class Database:
             )
         if published_after >= published_before:
             return None
-        return published_after, published_before, ""
+        priority = (
+            datetime.fromisoformat(row["updated_at"])
+            if row is not None
+            else datetime.min.replace(tzinfo=timezone.utc)
+        )
+        return published_after, published_before, "", priority
 
     def record_search_page(
         self,
@@ -245,6 +256,29 @@ class Database:
                 "SELECT * FROM discovered_videos ORDER BY first_discovered_at, video_id"
             )
         )
+
+    def record_api_request(
+        self, resource: str, usage_date: date | None = None
+    ) -> None:
+        usage_date = usage_date or datetime.now(timezone.utc).date()
+        units = 100 if resource == "search" else 1
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO api_quota_usage VALUES (?, ?)
+                ON CONFLICT(usage_date) DO UPDATE SET
+                    units_used=units_used + excluded.units_used
+                """,
+                (usage_date.isoformat(), units),
+            )
+
+    def quota_units_used(self, usage_date: date | None = None) -> int:
+        usage_date = usage_date or datetime.now(timezone.utc).date()
+        row = self.connection.execute(
+            "SELECT units_used FROM api_quota_usage WHERE usage_date=?",
+            (usage_date.isoformat(),),
+        ).fetchone()
+        return int(row["units_used"]) if row is not None else 0
 
     def upsert_videos(
         self, videos: Iterable[Video], collected_at: datetime | None = None

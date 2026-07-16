@@ -23,6 +23,7 @@ class TrendPipeline:
         self, client: YouTubeClient, now: datetime | None = None
     ) -> FilterResult:
         now = now or datetime.now(timezone.utc)
+        self._attach_usage_recorder(client, now)
         published_after = now - timedelta(days=self.settings.window_days)
         active_count = len(self.database.videos_published_since(published_after))
         pending_count = len(self.database.pending_discoveries())
@@ -30,7 +31,11 @@ class TrendPipeline:
             client,
             published_after,
             now,
-            self._search_request_budget(active_count, pending_count),
+            self._search_request_budget(
+                active_count,
+                pending_count,
+                self.database.quota_units_used(now.date()),
+            ),
         )
         pending = self.database.pending_discoveries()
         if not pending:
@@ -82,6 +87,7 @@ class TrendPipeline:
         self, client: YouTubeClient, now: datetime | None = None
     ) -> int:
         now = now or datetime.now(timezone.utc)
+        self._attach_usage_recorder(client, now)
         active_rows = self.database.videos_published_since(
             now - timedelta(days=self.settings.window_days)
         )
@@ -116,17 +122,38 @@ class TrendPipeline:
         published_before: datetime,
         request_budget: int,
     ) -> int:
-        pages = deque()
-        for category, query in iter_queries():
+        queued_pages = []
+        for matrix_index, (category, query) in enumerate(iter_queries()):
             work = self.database.search_work(
                 category, query, published_after, published_before
             )
             if work is not None:
-                pages.append((category, query, *work))
+                window_start, window_end, page_token, priority = work
+                queued_pages.append(
+                    (
+                        priority,
+                        matrix_index,
+                        category,
+                        query,
+                        window_start,
+                        window_end,
+                        page_token,
+                    )
+                )
+        queued_pages.sort(key=lambda page: (page[0], page[1]))
+        pages = deque(queued_pages)
 
         request_count = 0
         while pages and request_count < request_budget:
-            category, query, window_start, window_end, page_token = pages.popleft()
+            (
+                _priority,
+                matrix_index,
+                category,
+                query,
+                window_start,
+                window_end,
+                page_token,
+            ) = pages.popleft()
             video_ids, next_page_token = client.search_page(
                 query, window_start, window_end, page_token
             )
@@ -143,6 +170,8 @@ class TrendPipeline:
             if next_page_token:
                 pages.append(
                     (
+                        published_before,
+                        matrix_index,
                         category,
                         query,
                         window_start,
@@ -153,13 +182,17 @@ class TrendPipeline:
         return request_count
 
     def _search_request_budget(
-        self, active_video_count: int, pending_video_count: int = 0
+        self,
+        active_video_count: int,
+        pending_video_count: int = 0,
+        quota_units_used: int = 0,
     ) -> int:
         """Reserve quota for details and one refresh of every active video."""
         existing_refresh_units = (active_video_count + 49) // 50
         pending_batches = (pending_video_count + 49) // 50
         remaining = max(
             self.settings.daily_quota_units
+            - quota_units_used
             - existing_refresh_units
             - pending_batches * 3,
             0,
@@ -168,3 +201,13 @@ class TrendPipeline:
         # channels.list, and one later refresh batch at one unit each.
         quota_limited_requests = remaining // 103
         return min(self.settings.max_search_requests, quota_limited_requests)
+
+    def _attach_usage_recorder(
+        self, client: YouTubeClient, now: datetime
+    ) -> None:
+        if hasattr(client, "set_usage_recorder"):
+            client.set_usage_recorder(
+                lambda resource: self.database.record_api_request(
+                    resource, now.date()
+                )
+            )
