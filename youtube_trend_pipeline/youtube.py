@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
@@ -63,31 +64,29 @@ class YouTubeClient:
         """Return unique video IDs mapped to their first discovery category."""
         discovered: dict[str, str] = {}
         request_count = 0
-        for category, query in iter_queries():
-            page_token = ""
-            while request_count < max_search_requests:
-                params: dict[str, Any] = {
-                    "part": "snippet",
-                    "q": query,
-                    "type": "video",
-                    "order": "date",
-                    "maxResults": 50,
-                    "publishedAfter": published_after.isoformat().replace("+00:00", "Z"),
-                    "publishedBefore": published_before.isoformat().replace("+00:00", "Z"),
-                }
-                if page_token:
-                    params["pageToken"] = page_token
-                payload = self._request_json("search", params)
-                request_count += 1
-                for item in payload.get("items", []):
-                    video_id = item.get("id", {}).get("videoId")
-                    if video_id:
-                        discovered.setdefault(video_id, category)
-                page_token = payload.get("nextPageToken", "")
-                if not page_token:
-                    break
-            if request_count >= max_search_requests:
-                break
+        pages = deque((category, query, "") for category, query in iter_queries())
+        while pages and request_count < max_search_requests:
+            category, query, page_token = pages.popleft()
+            params: dict[str, Any] = {
+                "part": "snippet",
+                "q": query,
+                "type": "video",
+                "order": "date",
+                "maxResults": 50,
+                "publishedAfter": published_after.isoformat().replace("+00:00", "Z"),
+                "publishedBefore": published_before.isoformat().replace("+00:00", "Z"),
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            payload = self._request_json("search", params)
+            request_count += 1
+            for item in payload.get("items", []):
+                video_id = item.get("id", {}).get("videoId")
+                if video_id:
+                    discovered.setdefault(video_id, category)
+            next_page = payload.get("nextPageToken", "")
+            if next_page:
+                pages.append((category, query, next_page))
         return discovered
 
     def fetch_videos(self, discovered: dict[str, str]) -> list[Video]:
@@ -136,8 +135,11 @@ class YouTubeClient:
                 {"part": "statistics", "id": ",".join(batch), "maxResults": 50},
             )
             for item in payload.get("items", []):
-                result[item["id"]] = int(
-                    item.get("statistics", {}).get("subscriberCount", 0)
+                statistics = item.get("statistics", {})
+                result[item["id"]] = (
+                    -1
+                    if statistics.get("hiddenSubscriberCount")
+                    else int(statistics.get("subscriberCount", -1))
                 )
         return result
 
@@ -170,7 +172,7 @@ class YouTubeClient:
                 view_count=int(statistics.get("viewCount", -1)),
                 like_count=int(statistics.get("likeCount", -1)),
                 comment_count=int(statistics.get("commentCount", -1)),
-                subscriber_count=subscribers.get(channel_id, 0),
+                subscriber_count=subscribers.get(channel_id, -1),
                 tags=snippet.get("tags", []),
                 language=language,
                 thumbnail_url=thumbnail.get("url", ""),

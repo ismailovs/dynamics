@@ -35,7 +35,12 @@ def build_themes(
         max_features=20_000,
         sublinear_tf=True,
     )
-    matrix = vectorizer.fit_transform(texts)
+    try:
+        matrix = vectorizer.fit_transform(texts)
+    except ValueError as error:
+        if "empty vocabulary" in str(error):
+            return []
+        raise
     cluster_count = max(1, min(target_clusters, len(video_rows) // min_theme_videos))
     model = KMeans(
         n_clusters=cluster_count,
@@ -148,7 +153,10 @@ def _theme_metrics(
             published_at = published_at.replace(tzinfo=timezone.utc)
         age_hours = max((now - published_at).total_seconds() / 3600, 1)
         views_per_day.append(row["view_count"] / age_hours * 24)
-        subscriber_ratios.append(row["view_count"] / max(row["subscriber_count"], 1))
+        if row["subscriber_count"] >= 0:
+            subscriber_ratios.append(
+                row["view_count"] / max(row["subscriber_count"], 1)
+            )
         engagements.append(
             (row["like_count"] + row["comment_count"] * 2)
             / max(row["view_count"], 1)
@@ -169,7 +177,9 @@ def _theme_metrics(
         channel_count=len({row["channel_id"] for row in rows}),
         median_views=median(views),
         median_views_per_day=median(views_per_day),
-        median_view_subscriber_ratio=median(subscriber_ratios),
+        median_view_subscriber_ratio=median(subscriber_ratios)
+        if subscriber_ratios
+        else None,
         median_view_velocity=median(velocities),
         median_acceleration=median(accelerations),
         median_engagement=median(engagements),
@@ -202,17 +212,21 @@ def _theme_name(terms: list[str]) -> str:
     return " / ".join(selected).title()
 
 
-def _percentile_ranks(values: list[float]) -> list[float]:
-    if len(values) == 1:
-        return [50.0]
-    order = sorted(range(len(values)), key=values.__getitem__)
-    result = [0.0] * len(values)
+def _percentile_ranks(values: list[float | None]) -> list[float | None]:
+    known = [index for index, value in enumerate(values) if value is not None]
+    result: list[float | None] = [None] * len(values)
+    if len(known) == 1:
+        result[known[0]] = 50.0
+        return result
+    if not known:
+        return result
+    order = sorted(known, key=lambda index: values[index])  # type: ignore[arg-type]
     position = 0
     while position < len(order):
         end = position
         while end + 1 < len(order) and values[order[end + 1]] == values[order[position]]:
             end += 1
-        rank = ((position + end) / 2) / (len(values) - 1) * 100
+        rank = ((position + end) / 2) / (len(order) - 1) * 100
         for index in order[position : end + 1]:
             result[index] = rank
         position = end + 1
@@ -233,14 +247,26 @@ def _score_themes(themes: list[Theme], video_rows: list[Any]) -> None:
         ("consistency", 0.05),
     )
     normalized = {
-        name: _percentile_ranks([float(getattr(theme, name)) for theme in themes])
+        name: _percentile_ranks([getattr(theme, name) for theme in themes])
         for name, _ in metrics
     }
     views_by_id = {row["video_id"]: row["view_count"] for row in video_rows}
 
     for index, theme in enumerate(themes):
+        components = [
+            (normalized[name][index], weight) for name, weight in metrics
+        ]
+        available_weight = sum(
+            weight for value, weight in components if value is not None
+        )
         theme.opportunity_score = round(
-            sum(normalized[name][index] * weight for name, weight in metrics), 1
+            sum(
+                value * weight
+                for value, weight in components
+                if value is not None
+            )
+            / available_weight,
+            1,
         )
         total_views = sum(views_by_id[video_id] for video_id in theme.video_ids)
         dominant_share = (

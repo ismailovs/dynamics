@@ -15,7 +15,8 @@ class Settings:
     window_days: int = 14
     min_duration_seconds: int = 8 * 60
     max_duration_seconds: int = 60 * 60
-    max_search_requests: int = 100
+    max_search_requests: int = 90
+    daily_quota_units: int = 10_000
     target_clusters: int = 200
     min_theme_videos: int = 5
     random_state: int = 42
@@ -29,7 +30,8 @@ class Settings:
             window_days=int(os.getenv("YT_WINDOW_DAYS", "14")),
             min_duration_seconds=int(os.getenv("YT_MIN_DURATION_SECONDS", "480")),
             max_duration_seconds=int(os.getenv("YT_MAX_DURATION_SECONDS", "3600")),
-            max_search_requests=int(os.getenv("YT_MAX_SEARCH_REQUESTS", "100")),
+            max_search_requests=int(os.getenv("YT_MAX_SEARCH_REQUESTS", "90")),
+            daily_quota_units=int(os.getenv("YT_DAILY_QUOTA_UNITS", "10000")),
             target_clusters=int(os.getenv("YT_TARGET_CLUSTERS", "200")),
             min_theme_videos=int(os.getenv("YT_MIN_THEME_VIDEOS", "5")),
             random_state=int(os.getenv("YT_RANDOM_STATE", "42")),

@@ -88,6 +88,9 @@ class DurationAndFilterTests(unittest.TestCase):
 
 
 class YouTubeClientTests(unittest.TestCase):
+    def test_default_budget_reserves_quota_for_detail_requests(self) -> None:
+        self.assertEqual(Settings().max_search_requests, 90)
+
     def test_discovery_sends_rolling_window_and_deduplicates(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
 
@@ -115,6 +118,62 @@ class YouTubeClientTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["publishedAfter"], "2026-07-02T10:00:00Z")
         self.assertEqual(calls[0][1]["publishedBefore"], "2026-07-16T10:00:00Z")
 
+    def test_discovery_balances_first_pages_before_pagination(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def request(_resource: str, params: dict[str, object]) -> dict[str, object]:
+            calls.append(params)
+            return {"items": [], "nextPageToken": f"next-{params['q']}"}
+
+        client = YouTubeClient("test", request_json=request)
+        client.discover(
+            NOW - timedelta(days=14),
+            NOW,
+            max_search_requests=61,
+        )
+
+        self.assertEqual(len(calls), 61)
+        self.assertTrue(all("pageToken" not in call for call in calls[:60]))
+        self.assertIn("pageToken", calls[60])
+
+    def test_hidden_subscriber_count_is_preserved_as_unknown(self) -> None:
+        def request(resource: str, _params: dict[str, object]) -> dict[str, object]:
+            if resource == "channels":
+                return {
+                    "items": [
+                        {
+                            "id": "channel",
+                            "statistics": {"hiddenSubscriberCount": True},
+                        }
+                    ]
+                }
+            return {
+                "items": [
+                    {
+                        "id": "video",
+                        "snippet": {
+                            "title": "How Technology Is Changing the World",
+                            "description": "Inside the engineering story.",
+                            "channelId": "channel",
+                            "channelTitle": "Channel",
+                            "publishedAt": "2026-07-10T00:00:00Z",
+                            "categoryId": "28",
+                        },
+                        "contentDetails": {"duration": "PT12M"},
+                        "statistics": {
+                            "viewCount": "1000",
+                            "likeCount": "50",
+                            "commentCount": "5",
+                        },
+                    }
+                ]
+            }
+
+        video = YouTubeClient("test", request_json=request).fetch_videos(
+            {"video": "AI and technology"}
+        )[0]
+        self.assertEqual(video.subscriber_count, -1)
+
 
 class EndToEndTests(unittest.TestCase):
     def test_database_analysis_and_six_sheet_export(self) -> None:
@@ -122,18 +181,56 @@ class EndToEndTests(unittest.TestCase):
             root = Path(directory)
             settings = replace(
                 Settings(),
-                database_path=root / "trends.db",
+                database_path=root / "nested" / "trends.db",
                 report_path=root / "trends.xlsx",
                 target_clusters=2,
                 min_theme_videos=5,
             )
-            videos = [make_video(index, "ai") for index in range(5)]
+            videos = [
+                make_video(index, "ai", subscriber_count=-1) for index in range(5)
+            ]
             videos += [make_video(index, "nuclear") for index in range(5)]
+            historical = [
+                make_video(
+                    index,
+                    "nuclear",
+                    video_id=f"historical-{index}",
+                    title=f"The Forgotten History Archive Chapter {index}",
+                    description="The history of an ancient archive and its lost records.",
+                    published_at=NOW - timedelta(days=30 + index),
+                    discovery_category="History and mysteries",
+                )
+                for index in range(5)
+            ]
 
             with Database(settings.database_path) as database:
                 pipeline = TrendPipeline(settings, database)
-                result = pipeline.ingest(videos, collected_at=NOW - timedelta(days=1))
-                self.assertEqual(len(result.accepted), 10)
+                result = pipeline.ingest(
+                    videos + historical, collected_at=NOW - timedelta(days=1)
+                )
+                self.assertEqual(len(result.accepted), 15)
+                refreshed_ids: list[str] = []
+
+                class RefreshClient:
+                    def refresh_statistics(
+                        self, video_ids: object
+                    ) -> dict[str, tuple[int, int, int]]:
+                        refreshed_ids.extend(video_ids)  # type: ignore[arg-type]
+                        return {
+                            video.video_id: (
+                                video.view_count,
+                                video.like_count,
+                                video.comment_count,
+                            )
+                            for video in videos
+                        }
+
+                self.assertEqual(
+                    pipeline.refresh(RefreshClient(), now=NOW),  # type: ignore[arg-type]
+                    10,
+                )
+                self.assertEqual(set(refreshed_ids), {video.video_id for video in videos})
+                self.assertEqual(pipeline._search_request_budget(50_000), 87)
                 database.snapshot(snapshot_date=date(2026, 7, 15))
                 increased = {
                     video.video_id: (
@@ -144,11 +241,38 @@ class EndToEndTests(unittest.TestCase):
                     for index, video in enumerate(videos)
                 }
                 database.snapshot(increased, snapshot_date=date(2026, 7, 16))
+                partial_video = videos[0]
+                self.assertEqual(
+                    database.snapshot(
+                        {
+                            partial_video.video_id: (
+                                partial_video.view_count + 3_000,
+                                -1,
+                                -1,
+                            ),
+                            "unknown-video": (100, 5, 1),
+                        },
+                        snapshot_date=date(2026, 7, 16),
+                    ),
+                    1,
+                )
 
                 self.assertEqual(pipeline.analyze(now=NOW), 2)
                 themes = database.themes()
                 self.assertTrue(all(theme["median_view_velocity"] > 0 for theme in themes))
                 self.assertTrue(all(theme["video_count"] == 5 for theme in themes))
+                ai_theme = next(
+                    theme
+                    for theme in themes
+                    if theme["parent_category"] == "AI and technology"
+                )
+                self.assertIsNone(ai_theme["median_view_subscriber_ratio"])
+                partial_row = next(
+                    row
+                    for row in database.videos()
+                    if row["video_id"] == partial_video.video_id
+                )
+                self.assertEqual(partial_row["like_count"], partial_video.like_count + 20)
                 report = export_workbook(database, settings.report_path)
 
             workbook = load_workbook(report, read_only=True)
@@ -163,7 +287,7 @@ class EndToEndTests(unittest.TestCase):
                     "Methodology",
                 ],
             )
-            self.assertEqual(workbook["Video Data"].max_row, 11)
+            self.assertEqual(workbook["Video Data"].max_row, 16)
             self.assertEqual(workbook["Top 1000 Themes"].max_row, 3)
 
 

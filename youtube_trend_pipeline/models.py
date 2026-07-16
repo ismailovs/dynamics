@@ -56,7 +56,7 @@ class Theme:
     channel_count: int
     median_views: float
     median_views_per_day: float
-    median_view_subscriber_ratio: float
+    median_view_subscriber_ratio: float | None
     median_view_velocity: float
     median_acceleration: float
     median_engagement: float

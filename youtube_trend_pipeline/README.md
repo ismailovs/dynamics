@@ -79,7 +79,8 @@ Fixture records use the fields of `youtube_trend_pipeline.models.Video`;
 | `YT_WINDOW_DAYS` | `14` | Rolling collection window |
 | `YT_MIN_DURATION_SECONDS` | `480` | Minimum video length |
 | `YT_MAX_DURATION_SECONDS` | `3600` | Maximum video length |
-| `YT_MAX_SEARCH_REQUESTS` | `100` | Per-run search request safety cap |
+| `YT_MAX_SEARCH_REQUESTS` | `90` | Search cap reserving quota for details |
+| `YT_DAILY_QUOTA_UNITS` | `10000` | Quota used to reduce search dynamically |
 | `YT_TARGET_CLUSTERS` | `200` | Requested cluster target |
 | `YT_MIN_THEME_VIDEOS` | `5` | Minimum retained cluster size |
 | `YT_RANDOM_STATE` | `42` | Reproducible K-means seed |
@@ -111,13 +112,21 @@ Under the standard quota model, a project commonly receives 10,000 units/day
 and `search.list` costs 100 units, while `videos.list` and `channels.list` cost
 1 unit. That supports roughly 100 search requests—not a separate 100-request
 allowance—and at most about 5,000 raw search hits before duplicates if every
-request returns 50. Actual quota and policy can change; verify them in the
-Google Cloud Console and current YouTube documentation. Multi-day collection or
-an approved quota increase is required for the larger corpus.
+request returns 50. The safer default caps search at 90 requests to reserve
+units for video/channel detail calls. The effective cap is reduced further based
+on the number of active-window videos that `run-all` will refresh, and old
+retained videos are not refreshed or included in current theme analysis. Actual
+quota and policy can change; verify them in the Google Cloud Console and current
+YouTube documentation. Multi-day collection or an approved quota increase is
+required for the larger corpus.
 
 Language filtering prefers YouTube's declared audio/default language and uses a
 conservative text heuristic when it is absent. Public like/comment statistics
-can be disabled; those records are excluded as requested.
+can be disabled; those records are excluded on discovery as requested. If they
+become unavailable later, view-only snapshots are still retained. Hidden
+subscriber counts are treated as unknown and omitted from channel-normalized
+theme medians; scoring renormalizes the remaining weights instead of treating
+unknown counts as zero performance.
 
 ## Tests
 

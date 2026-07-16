@@ -21,10 +21,12 @@ class TrendPipeline:
         self, client: YouTubeClient, now: datetime | None = None
     ) -> FilterResult:
         now = now or datetime.now(timezone.utc)
+        published_after = now - timedelta(days=self.settings.window_days)
+        active_count = len(self.database.videos_published_since(published_after))
         discovered = client.discover(
-            published_after=now - timedelta(days=self.settings.window_days),
+            published_after=published_after,
             published_before=now,
-            max_search_requests=self.settings.max_search_requests,
+            max_search_requests=self._search_request_budget(active_count),
         )
         return self.ingest(client.fetch_videos(discovered), collected_at=now)
 
@@ -56,16 +58,28 @@ class TrendPipeline:
         self.database.upsert_videos(accepted, collected_at)
         return result
 
-    def refresh(self, client: YouTubeClient) -> int:
-        statistics = client.refresh_statistics(self.database.video_ids())
+    def refresh(
+        self, client: YouTubeClient, now: datetime | None = None
+    ) -> int:
+        now = now or datetime.now(timezone.utc)
+        active_rows = self.database.videos_published_since(
+            now - timedelta(days=self.settings.window_days)
+        )
+        statistics = client.refresh_statistics(
+            row["video_id"] for row in active_rows
+        )
         return self.database.snapshot(statistics)
 
     def snapshot_current(self) -> int:
         return self.database.snapshot()
 
     def analyze(self, now: datetime | None = None) -> int:
+        now = now or datetime.now(timezone.utc)
+        active_videos = self.database.videos_published_since(
+            now - timedelta(days=self.settings.window_days)
+        )
         themes = build_themes(
-            self.database.videos(),
+            active_videos,
             self.database.snapshots(),
             target_clusters=self.settings.target_clusters,
             min_theme_videos=self.settings.min_theme_videos,
@@ -74,3 +88,12 @@ class TrendPipeline:
         )
         self.database.replace_themes(themes)
         return len(themes)
+
+    def _search_request_budget(self, active_video_count: int) -> int:
+        """Reserve quota for details and one refresh of every active video."""
+        existing_refresh_units = (active_video_count + 49) // 50
+        remaining = max(self.settings.daily_quota_units - existing_refresh_units, 0)
+        # Each search costs 100 units and can trigger one videos.list, one
+        # channels.list, and one later refresh batch at one unit each.
+        quota_limited_requests = remaining // 103
+        return min(self.settings.max_search_requests, quota_limited_requests)

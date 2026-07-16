@@ -80,6 +80,7 @@ ON video_snapshots(video_id, snapshot_date);
 class Database:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
@@ -135,7 +136,10 @@ class Database:
                         title=excluded.title,
                         title_fingerprint=excluded.title_fingerprint,
                         description=excluded.description,
+                        channel_id=excluded.channel_id,
                         channel_title=excluded.channel_title,
+                        published_at=excluded.published_at,
+                        duration_seconds=excluded.duration_seconds,
                         view_count=excluded.view_count,
                         like_count=excluded.like_count,
                         comment_count=excluded.comment_count,
@@ -171,29 +175,43 @@ class Database:
                 for row in rows
             }
         with self.connection:
+            saved = 0
             for video_id, (views, likes, comments) in statistics.items():
-                if min(views, likes, comments) < 0:
+                if views < 0:
                     continue
-                self.connection.execute(
+                like_value = likes if likes >= 0 else None
+                comment_value = comments if comments >= 0 else None
+                updated = self.connection.execute(
                     """
                     UPDATE videos
-                    SET view_count=?, like_count=?, comment_count=?
+                    SET view_count=?,
+                        like_count=COALESCE(?, like_count),
+                        comment_count=COALESCE(?, comment_count)
                     WHERE video_id=?
                     """,
-                    (views, likes, comments, video_id),
+                    (views, like_value, comment_value, video_id),
                 )
+                if updated.rowcount == 0:
+                    continue
                 self.connection.execute(
                     """
                     INSERT INTO video_snapshots
                     VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(video_id, snapshot_date) DO UPDATE SET
                         view_count=excluded.view_count,
-                        like_count=excluded.like_count,
-                        comment_count=excluded.comment_count
+                        like_count=COALESCE(excluded.like_count, like_count),
+                        comment_count=COALESCE(excluded.comment_count, comment_count)
                     """,
-                    (video_id, snapshot_date.isoformat(), views, likes, comments),
+                    (
+                        video_id,
+                        snapshot_date.isoformat(),
+                        views,
+                        like_value,
+                        comment_value,
+                    ),
                 )
-        return len(statistics)
+                saved += 1
+        return saved
 
     def video_ids(self) -> list[str]:
         return [
@@ -203,6 +221,14 @@ class Database:
 
     def videos(self) -> list[sqlite3.Row]:
         return list(self.connection.execute("SELECT * FROM videos"))
+
+    def videos_published_since(self, published_after: datetime) -> list[sqlite3.Row]:
+        return list(
+            self.connection.execute(
+                "SELECT * FROM videos WHERE published_at >= ?",
+                (published_after.isoformat(),),
+            )
+        )
 
     def snapshots(self) -> list[sqlite3.Row]:
         return list(
